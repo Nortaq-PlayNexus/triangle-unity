@@ -220,7 +220,7 @@ namespace Triangle.Tests
             float watched = 0f;
             while (watched < 4f)
             {
-                player.Camera.transform.LookAt(corner, Vector3.up);
+                player.AimAt(corner);
                 watched += Time.deltaTime;
                 yield return null;
             }
@@ -257,7 +257,7 @@ namespace Triangle.Tests
             float elapsed = 0f;
             while (elapsed < 20f)
             {
-                player.Camera.transform.LookAt(corner, Vector3.up);
+                player.AimAt(corner);
                 elapsed += Time.deltaTime;
                 yield return null;
             }
@@ -647,6 +647,77 @@ namespace Triangle.Tests
         // --- Interaction finder -------------------------------------------------------------------
 
         [UnityTest]
+        public IEnumerator LookingUpDoesNotSnapTheViewToTheFloor()
+        {
+            yield return null;
+
+            TrianglePlayer player = TriangleRuntime.Player;
+            Assert.That(player != null, "The player was not created.");
+            Assert.That(player.Camera != null, "The player has no camera.");
+
+            // Aim well above the horizon. The bug this guards against read pitch back
+            // from transform.eulerAngles, which Unity reports in 0..360, so looking up
+            // produced ~350 and the clamp slammed the view to the floor.
+            player.AimAt(new Vector3(0f, 6f, 0f));
+            yield return null;
+
+            Vector3 forward = player.Camera.transform.forward;
+            Assert.That(forward.y > 0.2f,
+                $"Aiming above the horizon left the camera pointing at y={forward.y:0.00} (downwards) instead of up.");
+
+            // Sweeping further up must stay clamped and keep looking up, never flip.
+            for (int i = 0; i < 40; i++)
+            {
+                player.AimAt(new Vector3(0f, 40f, 0f));
+                yield return null;
+            }
+
+            forward = player.Camera.transform.forward;
+            Assert.That(forward.y > 0.5f,
+                $"Sustained upward aim ended up pointing at y={forward.y:0.00}; the pitch clamp is inverted or wrapping.");
+            Assert.That(forward.y <= 1.001f, "The camera forward vector is not normalised.");
+
+            // And looking back down must work too.
+            player.AimAt(new Vector3(0f, -6f, 0f));
+            yield return null;
+
+            forward = player.Camera.transform.forward;
+            Assert.That(forward.y < -0.2f,
+                $"Aiming below the horizon left the camera pointing at y={forward.y:0.00} instead of down.");
+        }
+
+        [UnityTest]
+        public IEnumerator TeleportingResyncsTheViewDirection()
+        {
+            yield return null;
+
+            TrianglePlayer player = TriangleRuntime.Player;
+
+            // The bedroom's DreamStart faces 180 degrees, i.e. looking at the window
+            // wall. After a teleport the tracked look angles must match, or the next
+            // mouse movement would snap the view somewhere unrelated.
+            var room = Object.FindObjectOfType<TriangleRoomBuilder>();
+            Assert.That(room != null && room.DreamStart != null, "The bedroom has no DreamStart.");
+
+            player.Teleport(room.DreamStart.position, room.DreamStart.rotation);
+            yield return null;
+
+            Vector3 forward = player.Camera.transform.forward;
+            Assert.That(forward.z < -0.8f,
+                $"After teleporting to the DreamStart the player should face -Z, but faces {forward}.");
+
+            // A frame of idle input must not drift the view.
+            Vector3 before = player.Camera.transform.forward;
+            for (int i = 0; i < 20; i++)
+            {
+                yield return null;
+            }
+
+            Assert.That(Vector3.Angle(before, player.Camera.transform.forward) < 0.5f,
+                "The view drifted while no input was given.");
+        }
+
+        [UnityTest]
         public IEnumerator TheInteractionFinderFocusesWhatThePlayerLooksAt()
         {
             yield return null;
@@ -659,7 +730,7 @@ namespace Triangle.Tests
             Vector3 target = notebook.GetComponent<TriangleInteractable>().GetInteractionWorldLocation();
             Vector3 stand = target + new Vector3(0f, 0f, -1.0f);
             player.Teleport(stand, Quaternion.identity);
-            player.Camera.transform.LookAt(target, Vector3.up);
+            player.AimAt(target);
 
             // The finder runs on a 0.08 s timer.
             for (int i = 0; i < 20; i++)
@@ -685,7 +756,7 @@ namespace Triangle.Tests
             // Stand on the far side of the notebook and look away from it, so the
             // notebook is genuinely behind the player rather than below and ahead.
             player.Teleport(target + new Vector3(0f, 0f, 1.0f), Quaternion.identity);
-            player.Camera.transform.LookAt(target + new Vector3(0f, 0f, 20f), Vector3.up);
+            player.AimAt(target + new Vector3(0f, 0f, 20f));
 
             for (int i = 0; i < 20; i++)
             {

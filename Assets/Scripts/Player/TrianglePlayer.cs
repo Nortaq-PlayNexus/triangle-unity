@@ -33,7 +33,7 @@ namespace Triangle.Player
         [SerializeField] private float walkSpeed = 3.2f;       // was Unreal 320 cm/s
         [SerializeField] private float gravity = -9.81f;
         [SerializeField] private float jumpHeight = 0.45f;
-        [SerializeField] private float mouseSensitivity = 2.2f;
+        [SerializeField] private float mouseSensitivity = 1.4f;
         [SerializeField] private float gamepadSensitivity = 120f;
         [SerializeField] private float maxPitch = 85f;
 
@@ -61,6 +61,11 @@ namespace Triangle.Player
         private float _verticalVelocity;
         private float _scanTimer;
         private Collider[] _selfColliders = new Collider[0];
+
+        /// <summary>Signed look angles in degrees. See <see cref="ApplyLook"/>.</summary>
+        private float _yaw;
+
+        private float _pitch;
 
         private void Awake()
         {
@@ -148,22 +153,73 @@ namespace Triangle.Player
             float stickX = Input.GetAxis("Right Stick X") * gamepadSensitivity * Time.deltaTime;
             float stickY = Input.GetAxis("Right Stick Y") * gamepadSensitivity * Time.deltaTime;
 
-            float yaw = mouseX + stickX;
-            float pitch = mouseY + stickY;
+            _yaw += mouseX + stickX;
 
-            if (Mathf.Abs(yaw) > 0.0001f)
+            // Unity's positive X euler pitches the camera *down*, so a mouse pushed
+            // forward (positive Mouse Y) must subtract to look up.
+            _pitch = Mathf.Clamp(_pitch - (mouseY + stickY), -maxPitch, maxPitch);
+
+            ApplyLook();
+        }
+
+        /// <summary>
+        /// Writes the tracked look angles onto the transform.
+        ///
+        /// Yaw and pitch are kept as explicit signed fields rather than read back from
+        /// <c>transform.eulerAngles</c>. Unity normalises euler angles into 0..360, so
+        /// reading the pitch back after looking up a few degrees yields ~350, and
+        /// clamping that to a sane range slams the view to the floor. Holding the angles
+        /// ourselves keeps the clamp meaningful at both ends.
+        /// </summary>
+        private void ApplyLook()
+        {
+            transform.rotation = Quaternion.Euler(_pitch, _yaw, 0f);
+        }
+
+        /// <summary>Re-derives the tracked look angles from the transform's world rotation.</summary>
+        private void SyncLookFromTransform()
+        {
+            Vector3 euler = transform.eulerAngles;
+            _yaw = euler.y;
+
+            // Fold the 0..360 range back into -180..180 so a downward-looking transform
+            // does not read as +350 degrees of pitch.
+            float pitch = euler.x;
+            if (pitch > 180f)
             {
-                transform.Rotate(0f, yaw, 0f, Space.World);
+                pitch -= 360f;
             }
 
-            if (Mathf.Abs(pitch) > 0.0001f)
+            _pitch = Mathf.Clamp(pitch, -maxPitch, maxPitch);
+        }
+
+        /// <summary>
+        /// Aims the view at a world point.
+        ///
+        /// Gameplay and tests should aim through this rather than rotating the camera
+        /// transform directly: the camera is a child, and the player rewrites its own
+        /// rotation every frame from the tracked angles.
+        /// </summary>
+        public void AimAt(Vector3 worldPoint)
+        {
+            if (Camera == null)
             {
-                // Unity reports downward mouse motion as positive Y; negate so moving
-                // the mouse down looks down, matching the Unreal modifier.
-                float current = transform.eulerAngles.x + pitch;
-                current = Mathf.Clamp(current, -maxPitch, maxPitch);
-                transform.rotation = Quaternion.Euler(current, transform.eulerAngles.y, 0f);
+                return;
             }
+
+            Vector3 origin = Camera.transform.position;
+            Vector3 toTarget = worldPoint - origin;
+            if (toTarget.sqrMagnitude < 0.000001f)
+            {
+                return;
+            }
+
+            toTarget.Normalize();
+
+            _yaw = Mathf.Atan2(toTarget.x, toTarget.z) * Mathf.Rad2Deg;
+            _pitch = -Mathf.Asin(Mathf.Clamp(toTarget.y, -1f, 1f)) * Mathf.Rad2Deg;
+            _pitch = Mathf.Clamp(_pitch, -maxPitch, maxPitch);
+            ApplyLook();
         }
 
         private void HandleMove()
@@ -489,6 +545,7 @@ namespace Triangle.Player
             }
 
             transform.SetPositionAndRotation(position, rotation);
+            SyncLookFromTransform();
             _verticalVelocity = 0f;
 
             if (_controller != null)
