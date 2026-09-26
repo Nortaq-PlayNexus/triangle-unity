@@ -140,11 +140,26 @@ namespace Triangle.Core
         {
             DreamClock += 1f;
 
-            var due = new List<string>();
+            // Snapshot the ids before rescheduling anything. Writing back into the
+            // dictionary while enumerating it throws, and the Unreal original got away
+            // with it only because C++ permits mutating the current element in a
+            // range-for. Both the reschedule path and the handler dispatch below can
+            // also add or remove entries mid-tick.
+            _sweep.Clear();
             foreach (KeyValuePair<string, MotifEntry> pair in _motifs)
             {
-                string id = pair.Key;
-                MotifEntry entry = pair.Value;
+                _sweep.Add(pair.Key);
+            }
+
+            var due = new List<string>();
+            for (int i = 0; i < _sweep.Count; i++)
+            {
+                string id = _sweep[i];
+                if (!_motifs.TryGetValue(id, out MotifEntry entry))
+                {
+                    continue; // removed by an earlier iteration this tick
+                }
+
                 if (!entry.Enabled || DreamClock < entry.NextScheduledTime)
                 {
                     continue;
@@ -171,12 +186,16 @@ namespace Triangle.Core
                 _motifs[id] = entry;
             }
 
-            // Broadcast after iterating so handlers can safely RequestMotif without
-            // mutating the table mid-loop.
+            _sweep.Clear();
+
+            // Broadcast after the sweep so handlers can safely RequestMotif, register
+            // new motifs, or disable existing ones without invalidating an enumerator.
             for (int i = 0; i < due.Count; i++)
             {
                 OnMotif?.Invoke(due[i]);
             }
         }
+
+        private readonly List<string> _sweep = new List<string>();
     }
 }

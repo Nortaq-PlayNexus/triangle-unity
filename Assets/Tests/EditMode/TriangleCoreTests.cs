@@ -191,5 +191,80 @@ namespace Triangle.Tests
             Assert.AreEqual(0f, facing.y, 0.001f);
             Assert.AreEqual(-1f, facing.z, 0.001f);
         }
+
+        // --- Motif scheduling ---------------------------------------------------
+
+        [Test]
+        public void MotifClockReschedulesInsteadOfFiringWhenRecognitionIsTooLow()
+        {
+            // Regression test. ClockTick reschedules a due motif whose recognition gate
+            // is unmet, writing the entry back into the table. Doing that while
+            // enumerating the table threw "Collection was modified", but only on frames
+            // where a scheduled motif actually came due - roughly once every 30 s in
+            // play, so the timing-dependent PlayMode suite kept missing it. Driving the
+            // clock directly makes the branch deterministic.
+            var motifs = new TriangleMotifSystem();
+            int fired = 0;
+            motifs.OnMotif += _ => fired++;
+
+            motifs.RegisterMotif("GatedMotif", new TriangleMotifConfig(0.1f, 0.2f, 99f));
+            motifs.EnableAutomaticScheduling(true);
+
+            // No player exists, so recognition reads 0 and the gate can never be met.
+            for (int i = 0; i < 50; i++)
+            {
+                motifs.Tick(1f);
+            }
+
+            Assert.AreEqual(0, fired, "A motif fired despite its recognition gate never being met.");
+            Assert.Greater(motifs.DreamClock, 40f, "The dream clock did not advance.");
+        }
+
+        [Test]
+        public void AHandlerMayReRequestMotifsWithoutCorruptingTheTable()
+        {
+            var motifs = new TriangleMotifSystem();
+            var fired = new List<string>();
+            motifs.OnMotif += id =>
+            {
+                fired.Add(id);
+                if (id == "First")
+                {
+                    // Mutating the table from inside a handler must be safe.
+                    motifs.RequestMotif("Second");
+                }
+            };
+
+            // "First" comes due in 30 s. "Second" is given a very long window so it can
+            // only ever fire because the handler asked for it, which keeps the
+            // assertion unambiguous.
+            motifs.RegisterMotif("First", new TriangleMotifConfig(30f, 30f, 0f));
+            motifs.RegisterMotif("Second", new TriangleMotifConfig(600f, 600f, 0f));
+            motifs.EnableAutomaticScheduling(true);
+
+            // Registering schedules each motif a full window out, so nothing is due yet.
+            motifs.Tick(1f);
+            Assert.AreEqual(0, fired.Count, "A motif fired before its first window elapsed.");
+
+            // Advance to the point where "First" comes due. Its handler re-requests
+            // "Second", which fires immediately and reschedules itself.
+            for (int i = 0; i < 31; i++)
+            {
+                motifs.Tick(1f);
+            }
+
+            Assert.AreEqual(2, fired.Count, "The due motif and the handler-requested motif should both have fired.");
+            Assert.AreEqual("First", fired[0]);
+            Assert.AreEqual("Second", fired[1]);
+
+            // Both were rescheduled a window out by their own dispatch, so the table
+            // mutation from inside the handler must not have left either due again.
+            for (int i = 0; i < 10; i++)
+            {
+                motifs.Tick(1f);
+            }
+
+            Assert.AreEqual(2, fired.Count, "A motif fired twice inside its cooldown window.");
+        }
     }
 }
