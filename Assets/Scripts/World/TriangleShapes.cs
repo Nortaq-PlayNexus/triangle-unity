@@ -151,10 +151,26 @@ namespace Triangle.World
                 material.color = color;
             }
 
+            // Nothing in this game is shiny, and Unity's Standard shader's default
+            // smoothness put a plastic highlight on every wall, floor and ceiling, which
+            // read as flat "pastey" white under the ambient term. Forcing a fully matte
+            // response keeps large flat surfaces looking like painted plaster.
             if (material.HasProperty("_Glossiness"))
             {
-                material.SetFloat("_Glossiness", 0.12f);
+                material.SetFloat("_Glossiness", 0f);
             }
+
+            if (material.HasProperty("_SpecColor"))
+            {
+                material.SetColor("_SpecColor", Color.black);
+            }
+
+            if (material.HasProperty("_Metallic"))
+            {
+                material.SetFloat("_Metallic", 0f);
+            }
+
+            material.EnableKeyword("_SPECULARHIGHLIGHTS_OFF");
 
             MaterialCache[key] = material;
             return material;

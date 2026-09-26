@@ -29,6 +29,21 @@ namespace Triangle.World
         private const float WallThickness = 0.2f;
         private const float TrackGap = 1.5f; // was Unreal 150 half-gap between platform edge and track
 
+        /// <summary>
+        /// Cool, dirty concrete tones. As with the bedroom, a single shared bright grey
+        /// made every surface read as the same flat mass; separating platform, wall,
+        /// ceiling and track gives the fluorescent strips something to model.
+        /// </summary>
+        private static readonly Color ConcreteColor = new Color(0.150f, 0.152f, 0.150f);
+        private static readonly Color PlatformColor = new Color(0.205f, 0.200f, 0.190f);
+        private static readonly Color CeilingColor = new Color(0.085f, 0.088f, 0.092f);
+        private static readonly Color WallColor = new Color(0.125f, 0.128f, 0.130f);
+        private static readonly Color EndWallColor = new Color(0.055f, 0.058f, 0.062f);
+        private static readonly Color TrackColor = new Color(0.040f, 0.042f, 0.046f);
+        private static readonly Color SleeperColor = new Color(0.070f, 0.060f, 0.050f);
+        private static readonly Color SafetyLineColor = new Color(0.330f, 0.280f, 0.060f);
+        private static readonly Color BenchColor = new Color(0.105f, 0.085f, 0.060f);
+
         private readonly List<GameObject> _spawned = new List<GameObject>();
 
         private Transform _dreamStart;
@@ -110,21 +125,21 @@ namespace Triangle.World
         {
             // Floor - concrete-grey, slightly warm.
             AddBox(new Vector3(0f, -0.1f, 0f), new Vector3(stationHalfX * 2f, 0.2f, stationHalfZ * 2f),
-                color: new Color(0.33f, 0.32f, 0.30f));
+                color: ConcreteColor);
 
             // Ceiling - low, oppressive.
             AddBox(new Vector3(0f, stationHeight + 0.1f, 0f), new Vector3(stationHalfX * 2f, 0.15f, stationHalfZ * 2f),
-                color: new Color(0.22f, 0.22f, 0.23f));
+                color: CeilingColor);
 
             // Side walls.
             AddBox(new Vector3(-stationHalfX, stationHeight * 0.5f, 0f), new Vector3(WallThickness, stationHeight, stationHalfZ * 2f),
-                color: new Color(0.30f, 0.30f, 0.29f));
+                color: WallColor);
             AddBox(new Vector3(stationHalfX, stationHeight * 0.5f, 0f), new Vector3(WallThickness, stationHeight, stationHalfZ * 2f),
-                color: new Color(0.30f, 0.30f, 0.29f));
+                color: WallColor);
 
             // End wall (far end - dark, no exit).
             AddBox(new Vector3(0f, stationHeight * 0.5f, -stationHalfZ), new Vector3(stationHalfX * 2f, stationHeight, WallThickness),
-                color: new Color(0.18f, 0.18f, 0.19f));
+                color: EndWallColor);
         }
 
         private void BuildPlatforms()
@@ -135,33 +150,33 @@ namespace Triangle.World
 
             AddBox(new Vector3(-platformCentreX, platformHeight * 0.5f, 0f),
                 new Vector3(platformDepth, platformHeight, stationHalfZ * 2f),
-                color: new Color(0.38f, 0.37f, 0.35f));
+                color: PlatformColor);
             AddBox(new Vector3(platformCentreX, platformHeight * 0.5f, 0f),
                 new Vector3(platformDepth, platformHeight, stationHalfZ * 2f),
-                color: new Color(0.38f, 0.37f, 0.35f));
+                color: PlatformColor);
 
             // Platform surface markings - thin lighter strips near the edge.
             AddBox(new Vector3(-(stationHalfX - 0.05f), platformHeight + 0.01f, 0f),
                 new Vector3(0.05f, 0.1f, stationHalfZ * 2f - 0.4f),
-                color: new Color(0.72f, 0.66f, 0.20f));
+                color: SafetyLineColor);
             AddBox(new Vector3(stationHalfX - 0.05f, platformHeight + 0.01f, 0f),
                 new Vector3(0.05f, 0.1f, stationHalfZ * 2f - 0.4f),
-                color: new Color(0.72f, 0.66f, 0.20f));
+                color: SafetyLineColor);
         }
 
         private void BuildTracks()
         {
             // Two dark strips for the track bed between platforms.
             AddBox(new Vector3(-1.5f, 0.02f, 0f), new Vector3(0.3f, 0.1f, stationHalfZ * 2f),
-                color: new Color(0.14f, 0.14f, 0.15f));
+                color: TrackColor);
             AddBox(new Vector3(1.5f, 0.02f, 0f), new Vector3(0.3f, 0.1f, stationHalfZ * 2f),
-                color: new Color(0.14f, 0.14f, 0.15f));
+                color: TrackColor);
 
             // Sleepers - thin dark boxes under the tracks.
             for (float z = -stationHalfZ + 0.8f; z < stationHalfZ - 0.8f; z += 0.7f)
             {
                 AddBox(new Vector3(0f, 0.01f, z), new Vector3(stationHalfX * 2f, 0.08f, 0.4f),
-                    color: new Color(0.20f, 0.18f, 0.16f));
+                    color: SleeperColor);
             }
         }
 
@@ -181,10 +196,11 @@ namespace Triangle.World
                 // The fixture - a long thin white box.
                 AddBox(position, new Vector3(0.15f, 0.15f, 4f), color: new Color(0.85f, 0.88f, 0.92f));
 
-                // The actual light.
+                // The actual light. Kept modest: four of these at full strength plus
+                // ambient washed the concrete out to a flat pale grey.
                 AddLight("Fluorescent",
                     new Vector3(position.x, position.y - 0.15f, position.z),
-                    new Color(0.85f, 0.88f, 0.92f), 1.6f, 8f);
+                    new Color(0.80f, 0.85f, 0.92f), 0.85f, 7f);
             }
         }
 
@@ -192,23 +208,23 @@ namespace Triangle.World
         {
             // Two ducts running along the ceiling between the lights.
             AddBox(new Vector3(-2.0f, stationHeight - 0.08f, 0f), new Vector3(0.25f, 0.25f, stationHalfZ * 2f),
-                color: new Color(0.36f, 0.36f, 0.34f));
+                color: ConcreteColor);
             AddBox(new Vector3(2.0f, stationHeight - 0.08f, 0f), new Vector3(0.25f, 0.25f, stationHalfZ * 2f),
-                color: new Color(0.36f, 0.36f, 0.34f));
+                color: ConcreteColor);
         }
 
         private void BuildBenches()
         {
             // One bench on each platform, near the middle.
             AddBox(new Vector3(-3.0f, platformHeight + 0.2f, -2.3f), new Vector3(0.35f, 0.4f, 1.2f),
-                color: new Color(0.30f, 0.26f, 0.20f));
+                color: BenchColor);
             AddBox(new Vector3(-3.0f, platformHeight + 0.4f, -2.3f), new Vector3(0.15f, 0.4f, 1.2f),
-                color: new Color(0.30f, 0.26f, 0.20f));
+                color: BenchColor);
 
             AddBox(new Vector3(3.0f, platformHeight + 0.2f, 2.3f), new Vector3(0.35f, 0.4f, 1.2f),
-                color: new Color(0.30f, 0.26f, 0.20f));
+                color: BenchColor);
             AddBox(new Vector3(3.0f, platformHeight + 0.4f, 2.3f), new Vector3(0.15f, 0.4f, 1.2f),
-                color: new Color(0.30f, 0.26f, 0.20f));
+                color: BenchColor);
         }
 
         private void BuildSafetyLights()
@@ -300,20 +316,22 @@ namespace Triangle.World
 
         private void BuildLighting()
         {
+            // As in the bedroom, ambient is kept low so the fluorescents actually model
+            // the platforms instead of flooding everything evenly.
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = new Color(0.25f, 0.28f, 0.32f);
-            RenderSettings.ambientEquatorColor = new Color(0.10f, 0.11f, 0.13f);
-            RenderSettings.ambientGroundColor = new Color(0.03f, 0.03f, 0.04f);
-            RenderSettings.ambientIntensity = 0.25f;
+            RenderSettings.ambientSkyColor = new Color(0.13f, 0.15f, 0.18f);
+            RenderSettings.ambientEquatorColor = new Color(0.05f, 0.055f, 0.065f);
+            RenderSettings.ambientGroundColor = new Color(0.015f, 0.016f, 0.020f);
+            RenderSettings.ambientIntensity = 0.18f;
 
             // Near-total darkness over the tracks.
-            AddLight("TrackFill", new Vector3(0f, 1.0f, 0f), new Color(0.05f, 0.05f, 0.07f), 0.25f, 6f);
+            AddLight("TrackFill", new Vector3(0f, 1.0f, 0f), new Color(0.05f, 0.05f, 0.07f), 0.12f, 5f);
 
             // Fog - thicker than the bedroom; underground, no breeze.
             RenderSettings.fog = true;
             RenderSettings.fogMode = FogMode.ExponentialSquared;
-            RenderSettings.fogDensity = 0.008f;
-            RenderSettings.fogColor = new Color(0.03f, 0.035f, 0.045f);
+            RenderSettings.fogDensity = 0.045f;
+            RenderSettings.fogColor = new Color(0.022f, 0.026f, 0.034f);
         }
 
         private void AddLight(string lightName, Vector3 position, Color color, float intensity, float range)

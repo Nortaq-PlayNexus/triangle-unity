@@ -85,6 +85,7 @@ namespace Triangle.Dream
         private bool _humEnabledForCurrentManifestation;
         private bool _maximumPointReapplied;
         private bool _schedulingStarted;
+        private bool _cornerHintShown;
 
         private TriangleAnomalyActor _activeAnomaly;
         private TriangleManifestationDefinition _activeDefinition;
@@ -385,6 +386,16 @@ namespace Triangle.Dream
             {
                 _timeWatching += deltaSeconds;
                 _playerLucidity.AddLucidity(watchLucidityPerSecond * deltaSeconds);
+
+                // The gaze has to be held, and the corner is easy to walk past, so the
+                // first sustained look gets one line. It points without explaining:
+                // the design wants the player to notice the corner before they are told
+                // it matters.
+                if (!_cornerHintShown && _timeWatching >= 2.5f)
+                {
+                    _cornerHintShown = true;
+                    PushSubtitle("The corner is darker than the rest of the room.", 4f);
+                }
 
                 // The corner only yields its point once the gaze is held, at most once
                 // per manifest interval.

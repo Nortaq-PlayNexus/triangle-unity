@@ -33,6 +33,19 @@ namespace Triangle.World
         private const float DoorGapMaxX = 2.3f;
         private const float DoorGapHeight = 2.2f;
 
+        /// <summary>
+        /// The room's palette. Every surface used to share one bright warm grey, so the
+        /// whole shell read as a single flat "pastey" mass with no readable landmarks.
+        /// Distinct, low-value colours let the moonlit window shape the room and keep
+        /// the corners genuinely dark.
+        /// </summary>
+        private static readonly Color WallColor = new Color(0.185f, 0.175f, 0.165f);
+        private static readonly Color FloorColor = new Color(0.105f, 0.095f, 0.085f);
+        private static readonly Color CeilingColor = new Color(0.130f, 0.125f, 0.125f);
+        private static readonly Color WoodColor = new Color(0.155f, 0.115f, 0.085f);
+        private static readonly Color MattressColor = new Color(0.235f, 0.230f, 0.240f);
+        private static readonly Color LinenColor = new Color(0.290f, 0.285f, 0.290f);
+
         private readonly List<GameObject> _spawned = new List<GameObject>();
 
         private Transform _dreamStart;
@@ -105,7 +118,7 @@ namespace Triangle.World
         }
 
         /// <summary>Spawns a plain box and records it for teardown. Position is in metres.</summary>
-        private GameObject AddBox(Vector3 position, Vector3 scale, Quaternion? rotation = null)
+        private GameObject AddBox(Vector3 position, Vector3 scale, Quaternion? rotation = null, Color? color = null)
         {
             GameObject box = Track(TriangleShapes.CreateShape("RoomPiece", TriangleShapes.Cube, transform));
             box.transform.SetParent(transform, true);
@@ -114,7 +127,7 @@ namespace Triangle.World
             box.transform.localScale = scale;
 
             MeshRenderer renderer = box.GetComponent<MeshRenderer>();
-            renderer.sharedMaterial = TriangleShapes.GetMaterial(new Color(0.42f, 0.40f, 0.38f));
+            renderer.sharedMaterial = TriangleShapes.GetMaterial(color ?? WallColor);
 
             var collider = box.AddComponent<BoxCollider>();
             collider.size = Vector3.one;
@@ -124,53 +137,73 @@ namespace Triangle.World
         private void BuildShell()
         {
             // Floor / ceiling.
-            AddBox(new Vector3(0f, -0.1f, 0f), new Vector3(roomHalfX * 2f, 0.2f, roomHalfZ * 2f));
-            AddBox(new Vector3(0f, roomHeight + 0.1f, 0f), new Vector3(roomHalfX * 2f, 0.15f, roomHalfZ * 2f));
+            AddBox(new Vector3(0f, -0.1f, 0f), new Vector3(roomHalfX * 2f, 0.2f, roomHalfZ * 2f), color: FloorColor);
+            AddBox(new Vector3(0f, roomHeight + 0.1f, 0f), new Vector3(roomHalfX * 2f, 0.15f, roomHalfZ * 2f), color: CeilingColor);
 
             // Back wall (Z negative) - has the window, built as a thin full wall plus
             // the window light source in BuildWindow().
-            AddBox(new Vector3(0f, roomHeight * 0.5f, -roomHalfZ), new Vector3(roomHalfX * 2f, roomHeight, WallThickness));
+            AddBox(new Vector3(0f, roomHeight * 0.5f, -roomHalfZ), new Vector3(roomHalfX * 2f, roomHeight, WallThickness), color: WallColor);
 
             // Left / right walls.
-            AddBox(new Vector3(-roomHalfX, roomHeight * 0.5f, 0f), new Vector3(WallThickness, roomHeight, roomHalfZ * 2f));
-            AddBox(new Vector3(roomHalfX, roomHeight * 0.5f, 0f), new Vector3(WallThickness, roomHeight, roomHalfZ * 2f));
+            AddBox(new Vector3(-roomHalfX, roomHeight * 0.5f, 0f), new Vector3(WallThickness, roomHeight, roomHalfZ * 2f), color: WallColor);
+            AddBox(new Vector3(roomHalfX, roomHeight * 0.5f, 0f), new Vector3(WallThickness, roomHeight, roomHalfZ * 2f), color: WallColor);
 
             // Front wall (Z positive) with the door gap.
             float leftWidth = DoorGapMinX + roomHalfX;
             AddBox(new Vector3((DoorGapMinX - roomHalfX) * 0.5f, roomHeight * 0.5f, roomHalfZ),
-                new Vector3(leftWidth, roomHeight, WallThickness));
+                new Vector3(leftWidth, roomHeight, WallThickness), color: WallColor);
 
             float rightWidth = roomHalfX - DoorGapMaxX;
             AddBox(new Vector3((DoorGapMaxX + roomHalfX) * 0.5f, roomHeight * 0.5f, roomHalfZ),
-                new Vector3(rightWidth, roomHeight, WallThickness));
+                new Vector3(rightWidth, roomHeight, WallThickness), color: WallColor);
 
             // Lintel above the gap.
             AddBox(new Vector3((DoorGapMinX + DoorGapMaxX) * 0.5f, (roomHeight + DoorGapHeight) * 0.5f, roomHalfZ),
-                new Vector3(DoorGapMaxX - DoorGapMinX, roomHeight - DoorGapHeight, WallThickness));
+                new Vector3(DoorGapMaxX - DoorGapMinX, roomHeight - DoorGapHeight, WallThickness), color: WallColor);
         }
 
         private void BuildWindow()
         {
-            // A pale panel on the back wall that reads as moonlight.
-            GameObject window = AddBox(new Vector3(0f, 1.5f, -roomHalfZ - 0.02f), new Vector3(1.2f, 1.4f, 0.06f));
+            // A pale panel on the back wall that reads as moonlight. This is the room's
+            // only bright surface and its visual anchor, so it is emissive rather than
+            // merely lit - a dimly lit panel in a dark room is just a dark panel.
+            // The back wall's inner face sits at z = -roomHalfZ + WallThickness/2, and
+            // the room lies on the +Z side of it. Anything placed at or behind -roomHalfZ
+            // is buried inside the wall and never drawn - which is why the first attempt
+            // at this produced no window at all, only the point light's glow on the
+            // plaster. The frame, pane and mullion are layered in front of the wall face.
+            float wallFace = -roomHalfZ + WallThickness * 0.5f;
+
+            GameObject frame = AddBox(new Vector3(0f, 1.55f, wallFace + 0.01f), new Vector3(1.42f, 1.66f, 0.04f));
+            frame.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.09f, 0.08f, 0.07f));
+            frame.GetComponent<BoxCollider>().enabled = false;
+
+            // The pane is the only bright surface in the room and its visual anchor, so
+            // it is emissive rather than merely lit.
+            GameObject window = AddBox(new Vector3(0f, 1.55f, wallFace + 0.045f), new Vector3(1.10f, 1.34f, 0.05f));
             window.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetEmissiveMaterial(
-                new Color(0.55f, 0.68f, 0.95f), 0.9f);
+                new Color(0.60f, 0.72f, 0.98f), 2.2f);
             window.GetComponent<BoxCollider>().enabled = false;
+
+            // A mullion across the middle, so it reads as a window rather than a light.
+            GameObject mullion = AddBox(new Vector3(0f, 1.55f, wallFace + 0.08f), new Vector3(1.14f, 0.055f, 0.05f));
+            mullion.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.09f, 0.08f, 0.07f));
+            mullion.GetComponent<BoxCollider>().enabled = false;
         }
 
         private void BuildBed()
         {
             // Frame, mattress and pillow reads as a bed in the dark.
-            AddBox(new Vector3(-2.2f, 0.15f, 1.5f), new Vector3(1.0f, 0.3f, 2.0f));
-            AddBox(new Vector3(-2.2f, 0.42f, 1.5f), new Vector3(0.95f, 0.12f, 1.9f));
-            AddBox(new Vector3(-2.32f, 0.53f, 0.6f), new Vector3(0.7f, 0.10f, 0.45f));
+            AddBox(new Vector3(-2.2f, 0.15f, 1.5f), new Vector3(1.0f, 0.3f, 2.0f), color: WoodColor);
+            AddBox(new Vector3(-2.2f, 0.42f, 1.5f), new Vector3(0.95f, 0.12f, 1.9f), color: MattressColor);
+            AddBox(new Vector3(-2.32f, 0.53f, 0.6f), new Vector3(0.7f, 0.10f, 0.45f), color: LinenColor);
             // Headboard.
-            AddBox(new Vector3(-2.2f, 0.55f, 2.52f), new Vector3(1.0f, 0.75f, 0.12f));
+            AddBox(new Vector3(-2.2f, 0.55f, 2.52f), new Vector3(1.0f, 0.75f, 0.12f), color: WoodColor);
         }
 
         private void BuildDesk()
         {
-            AddBox(new Vector3(2.0f, 0.55f, -0.8f), new Vector3(0.6f, 0.7f, 1.2f));
+            AddBox(new Vector3(2.0f, 0.55f, -0.8f), new Vector3(0.6f, 0.7f, 1.2f), color: WoodColor);
         }
 
         private void BuildClock()
@@ -227,26 +260,29 @@ namespace Triangle.World
 
         private void BuildLighting()
         {
-            // Ambient moon wash. UE used a SkyLight actor; the equivalent in Unity's
-            // built-in pipeline is the scene ambient term.
+            // Ambient is kept very low and cold. A bright ambient term is what made the
+            // whole shell read as flat pasteboard: it lights every surface equally, so
+            // nothing has shape. Almost all of the room's form should come from the
+            // window, with the corners falling away into the fog.
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = new Color(0.30f, 0.36f, 0.46f);
-            RenderSettings.ambientEquatorColor = new Color(0.14f, 0.16f, 0.22f);
-            RenderSettings.ambientGroundColor = new Color(0.05f, 0.05f, 0.07f);
-            RenderSettings.ambientIntensity = 0.45f;
+            RenderSettings.ambientSkyColor = new Color(0.20f, 0.24f, 0.34f);
+            RenderSettings.ambientEquatorColor = new Color(0.09f, 0.10f, 0.13f);
+            RenderSettings.ambientGroundColor = new Color(0.03f, 0.03f, 0.04f);
+            RenderSettings.ambientIntensity = 0.40f;
 
-            // Ceiling fill - sombre, low, slightly warm against the blue moonlight.
-            AddLight("CeilingFill", new Vector3(0f, 2.5f, 0f), new Color(0.62f, 0.55f, 0.44f), 1.2f, 9f);
+            // The window is the key light: cold, and the only strong source. Its range
+            // has to reach the far wall or the room reads as a black void with a bright
+            // rectangle floating in it.
+            AddLight("WindowLight", new Vector3(0f, 1.55f, -roomHalfZ + 0.45f),
+                new Color(0.52f, 0.66f, 0.95f), 3.4f, 14f);
 
-            // Cold glow spilling from the window.
-            AddLight("WindowLight", new Vector3(0f, 1.5f, -roomHalfZ - 0.18f), new Color(0.55f, 0.68f, 0.95f), 2.4f, 13f);
+            // Ceiling fill - dim and warm, so the two sources disagree in colour.
+            AddLight("CeilingFill", new Vector3(0f, 2.55f, 0.8f), new Color(0.62f, 0.52f, 0.40f), 0.60f, 8f);
 
-            // Fog for corner darkness and depth. UE's ExponentialHeightFog maps onto
-            // Unity's built-in exponential-squared fog.
             RenderSettings.fog = true;
             RenderSettings.fogMode = FogMode.ExponentialSquared;
-            RenderSettings.fogDensity = 0.0045f;
-            RenderSettings.fogColor = new Color(0.06f, 0.07f, 0.09f);
+            RenderSettings.fogDensity = 0.016f;
+            RenderSettings.fogColor = new Color(0.045f, 0.055f, 0.080f);
         }
 
         private void AddLight(string lightName, Vector3 position, Color color, float intensity, float range)
