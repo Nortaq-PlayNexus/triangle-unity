@@ -74,13 +74,32 @@ Unity.exe -batchmode -quit -projectPath <project> -executeMethod Triangle.Editor
 
 ## Tests
 
-`Assets/Tests/EditMode/TriangleCoreTests.cs` ports the four Unreal automation tests
-(manifestation bounds, recognition catalogue restoration, lucidity clamping, save
-schema) and adds coverage for the axis conversion the ported builders depend on.
+**34 tests, all passing.** This is the validation the Unreal version never got — its
+`DEVELOPMENT_STATUS.md` had claimed "source complete; runtime gate pending" for
+weeks because the editor target could not build.
+
+`Assets/Tests/EditMode` (12 tests) covers the progression maths, the pattern
+catalogue, save-schema defaults, and the centimetre-to-metre axis conversion the
+ported builders depend on. These port the four original Unreal automation tests and
+add coverage for the conversion.
+
+`Assets/Tests/PlayMode` (22 tests) drives the real scene and walks the slice's
+acceptance path end to end: bedroom spawn, notebook pages, corner manifestation,
+recognition, the High Lucidity door, the deliberate second interaction, Platform 12,
+the wrong train, save, wipe, load, and a queued cross-environment load. Every
+assertion reads live system state; nothing is mocked.
 
 ```
-Unity.exe -batchmode -quit -projectPath <project> -runTests -testPlatform EditMode -testResults results.xml
+Unity.exe -batchmode -nographics -projectPath . -runTests -testPlatform EditMode  -testResults edit.xml
+Unity.exe -batchmode -nographics -projectPath . -runTests -testPlatform PlayMode -testResults play.xml
 ```
+
+Both return a non-zero exit code on failure, so they can gate CI.
+
+Validation also caught six real bugs that reading alone would not have found —
+including `MonoBehaviour.Invoke` being used to defer callbacks that belong to plain
+classes, which fails silently and meant every environment transition never fired.
+The commit message lists them all.
 
 ## Documentation
 
