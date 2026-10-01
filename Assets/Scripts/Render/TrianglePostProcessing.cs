@@ -44,11 +44,15 @@ namespace Triangle.Render
 
         [Header("Bloom")]
         [Tooltip("Brightness above which pixels bloom. Thresholds in gamma space, so this needs to sit low for a dark scene.")]
-        [Range(0f, 3f)] [SerializeField] private float bloomThreshold = 0.85f;
+        // Threshold above 1.0, because the scene's own bright surfaces sit near 1.3 - a window
+        // pane, a fluorescent tube. Thresholding below that would make every lit surface
+        // bloom and flatten the image into a haze; this leaves bloom as a glow around the
+        // genuinely brightest things rather than a veil over the whole frame.
+        [Range(0f, 3f)] [SerializeField] private float bloomThreshold = 1.0f;
 
-        [Range(0f, 3f)] [SerializeField] private float bloomIntensity = 0.55f;
+        [Range(0f, 3f)] [SerializeField] private float bloomIntensity = 0.42f;
 
-        [Range(0f, 1f)] [SerializeField] private float bloomScatter = 0.72f;
+        [Range(0f, 1f)] [SerializeField] private float bloomScatter = 0.68f;
 
         [Header("Grain and aberration")]
         [Range(0f, 1f)] [SerializeField] private float filmGrainIntensity = 0.22f;

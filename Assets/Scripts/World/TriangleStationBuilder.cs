@@ -538,6 +538,10 @@ namespace Triangle.World
                 new Vector3(stationHalfX * 2f - 0.4f, stationHeight - 0.3f, stationHalfZ * 2f - 0.4f));
 
             TriangleLighting.RefreshWhenSettled(probe, this);
+
+            // Baked once here so the engine's cubemap shaders are referenced by something
+            // in the build. See the note in TriangleRoomBuilder.BuildProbes.
+            probe.RenderProbe();
         }
 
         private void AddLight(string lightName, Vector3 position, Color color, float intensity, float range,

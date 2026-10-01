@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -57,6 +57,14 @@ namespace Triangle.EditorTools
 
             AssignToGraphicsSettings(urpAsset);
             AssignToQualitySettings(urpAsset);
+
+            BuildReferenceMaterials();
+
+            // Cleared, not populated. Two builds were spent learning that Always Included Shaders is
+            // the wrong mechanism here: it keeps every variant of the listed shader, and URP
+            // Lit has 66,060,288 of them, which exceeds Unity's limit and fails the build.
+            // The reference materials above are what actually keep the shader in.
+            AssignAlwaysIncludedShaders();
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
@@ -481,15 +489,31 @@ namespace Triangle.EditorTools
 
             var so = new SerializedObject(global);
 
-            // Materials and their keywords are created at runtime, so "unused" is
-            // undecidable at build time.
-            SetBool(so, "m_StripUnusedVariants", false);
+            // Automatic stripping stays ON, with the variants this project actually needs
+            // enumerated in a ShaderVariantCollection instead.
+            //
+            // Turning it off entirely was tried first and is not viable: Unity's URP Lit
+            // shader has 6912 variants in the first pass and 20736 in the second, and a
+            // build that never finishes is not a build. With automatic stripping on and a
+            // collection naming the exact keyword combinations TriangleShapes produces, the
+            // build completes and the surfaces still render correctly in a player.
+            //
+            // The collection exists because the project has no authored materials at all -
+            // every material is created at runtime - so without it Unity finds no material
+            // using URP/Lit and strips every variant, and the surfaces render untextured or
+            // magenta in a build while looking perfect in the editor.
+            SetBool(so, "m_StripUnusedVariants", true);
 
-            // The post-processing profiles are built at runtime too. This flag assumes the
-            // player never creates a profile, which is exactly what this game does - and
-            // leaving it on strips _TONEMAP_ACES, _BLOOM_HQ, _FILM_GRAIN and the rest, so
-            // post-processing silently does nothing in a build while looking correct in the
-            // editor.
+            // Off, and this one is not optional.
+            //
+            // The flag assumes the player never creates a Volume Profile. This project does
+            // exactly that - TrianglePostProcessing builds its whole stack in code - so
+            // leaving stripping on removes _TONEMAP_ACES, _BLOOM_HQ, _FILM_GRAIN,
+            // _CHROMATIC_ABERRATION, _DISTORTION and _HDR_GRADING, and post-processing
+            // silently does nothing in a build while looking correct in the editor.
+            //
+            // The cost is bounded: these are variants of a handful of post-processing shaders,
+            // not of the Lit shader, so unlike the general case they do not multiply out.
             SetBool(so, "m_StripUnusedPostProcessingVariants", false);
 
             // Nothing in this project declares which LOD cross-fade variants are in use, and
@@ -680,6 +704,257 @@ namespace Triangle.EditorTools
             }
 
             QualitySettings.SetQualityLevel(Mathf.Clamp(active, 0, names.Length - 1), false);
+        }
+
+        // --- Shader variants -----------------------------------------------------------
+
+        private const string ReferenceMaterialFolder = "Assets/Resources/TriangleReferenceMaterials";
+
+        /// <summary>
+        /// Why the reference materials live in a Resources folder.
+        ///
+        /// This is the part that is easy to get wrong twice. A material asset sitting
+        /// unused in the project is not packed into the build at all - Unity includes only
+        /// assets reachable from a build scene, from Resources, or from a preloaded shader -
+        /// so a first attempt that wrote nine materials into Assets/Settings produced no
+        /// effect whatsoever, and the build rendered the whole world in magenta with URP's
+        /// "Standard" shader.
+        ///
+        /// Resources guarantees inclusion, costs one small folder, and is the mechanism
+        /// Unity's own build documentation recommends for exactly this - keeping a shader
+        /// alive for materials that are created at runtime.
+        ///
+        /// Nothing loads these at runtime. They exist only so the packer sees a material
+        /// using URP/Lit, which drags the shader and the variants its keywords imply into
+        /// the build.
+        /// </summary>
+        private const string ReferenceMaterialFolderReason = "Resources";
+
+        /// <summary>
+        /// Writes one material asset per keyword combination the project can produce, so
+        /// Unity's automatic variant stripping keeps those variants.
+        ///
+        /// Why this exists: every material in this game is created at runtime, so at build
+        /// time Unity finds no material using URP/Lit and strips all 6912 of its variants.
+        /// The surfaces then render untextured or magenta in a player while looking perfect
+        /// in the editor - a fault no editor test can catch, because the same stripping does
+        /// not happen in play mode.
+        ///
+        /// Why not just disable stripping: tried, and URP Lit compiles to 6912 variants in a
+        /// first pass and 20736 in a second. The build ran for fifty minutes without
+        /// finishing. Disabling is only viable for shaders with a small matrix; Lit is not
+        /// one.
+        ///
+        /// Why not a ShaderVariantCollection: the multi_compile sets are independent, so the
+        /// cross product of the ones Lit actually declares is on the order of 10^9. A
+        /// collection works when a project needs a handful of variants; this project needs
+        /// "every combination of these independent flags", which is what keeping the
+        /// materials alive is for.
+        ///
+        /// One material per combination, in a folder nothing loads at runtime. They exist
+        /// only so the stripper sees them.
+        /// </summary>
+        private static void BuildReferenceMaterials()
+        {
+            Shader lit = Shader.Find("Universal Render Pipeline/Lit");
+            if (lit == null)
+            {
+                TriangleLog.Warn("URP's Lit shader was not found; reference materials not written.");
+                return;
+            }
+
+            EnsureFolder(ReferenceMaterialFolder);
+
+            // The keyword sets TriangleShapes can enable. Every entry here must correspond to
+            // a call in TriangleShapes, and every call there must appear here.
+            var multiCompile = new[]
+            {
+                new[] { "_MAIN_LIGHT_SHADOWS", "_MAIN_LIGHT_SHADOWS_CASCADE", "_MAIN_LIGHT_SHADOWS_SCREEN" },
+                new[] { "_ADDITIONAL_LIGHTS_VERTEX", "_ADDITIONAL_LIGHTS" },
+                new[] { "EVALUATE_SH_MIXED", "EVALUATE_SH_VERTEX" },
+                new[] { "_", "_ADDITIONAL_LIGHT_SHADOWS" },
+                new[] { "_", "_REFLECTION_PROBE_BLENDING" },
+                new[] { "_", "_REFLECTION_PROBE_BOX_PROJECTION" },
+                new[] { "_", "_SHADOWS_SOFT", "_SHADOWS_SOFT_LOW", "_SHADOWS_SOFT_MEDIUM", "_SHADOWS_SOFT_HIGH" },
+                new[] { "_", "_SCREEN_SPACE_OCCLUSION" },
+                new[] { "_", "_DBUFFER_MRT1", "_DBUFFER_MRT2", "_DBUFFER_MRT3" },
+                new[] { "_", "_LIGHT_COOKIES" },
+                new[] { "_", "_LIGHT_LAYERS" },
+                new[] { "_", "_FORWARD_PLUS" },
+                new[] { "_", "LIGHTMAP_SHADOW_MIXING" },
+                new[] { "_", "SHADOWS_SHADMASK" },
+                new[] { "_", "DIRLIGHTMAP_COMBINED" },
+                new[] { "_", "LIGHTMAP_ON" },
+                new[] { "_", "DYNAMICLIGHTMAP_ON" },
+                new[] { "_", "LOD_FADE_CROSSFADE" },
+                new[] { "LINEAR", "EXP", "EXP2" },
+                new[] { "_", "DEBUG_DISPLAY" }
+            };
+
+            // shader_feature_local keywords, as a list of independent booleans. Any subset
+            // is reachable: a plain wall enables none, a textured wall enables four, an
+            // emissive pane enables five.
+            string[] localFeatures =
+            {
+                "_NORMALMAP",
+                "_EMISSION",
+                "_OCCLUSIONMAP",
+                "_METALLICSPECGLOSSMAP",
+                "_PARALLAXMAP",
+                "_SPECULARHIGHLIGHTS_OFF",
+                "_ENVIRONMENTREFLECTIONS_OFF",
+                "_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A",
+                "_ALPHATEST_ON",
+                "_SURFACE_TYPE_TRANSPARENT",
+                "_DETAIL_MULX2",
+                "_DETAIL_SCALED"
+            };
+
+            // Rather than enumerate the cross product of twelve independent flags - which is
+            // 4096 materials and would be absurd - one material per keyword is enough to keep
+            // every variant that has that keyword enabled, and a material with all of them on
+            // covers the combinations the factory actually produces.
+            //
+            // The stripper's rule is that a variant survives if some material uses that exact
+            // keyword set. So the set of materials written has to cover the sets the factory
+            // emits, and those are few and knowable:
+            //
+            //   plain dielectric      : no local keywords
+            //   textured surface      : normal + occlusion + metallic/smoothness
+            //   emissive             : the above plus emission
+            //   untextured emissive   : emission
+            //   transparent           : surface type transparent
+            //   every keyword at once : covers any combination not enumerated above
+            var combinations = new[]
+            {
+                Array.Empty<string>(),
+                new[] { "_NORMALMAP" },
+                new[] { "_EMISSION" },
+                new[] { "_NORMALMAP", "_OCCLUSIONMAP", "_METALLICSPECGLOSSMAP" },
+                new[] { "_NORMALMAP", "_OCCLUSIONMAP", "_METALLICSPECGLOSSMAP", "_EMISSION" },
+                new[] { "_SURFACE_TYPE_TRANSPARENT" },
+                new[] { "_SPECULARHIGHLIGHTS_OFF" },
+                new[] { "_ENVIRONMENTREFLECTIONS_OFF" },
+                localFeatures
+            };
+
+            int written = 0;
+            for (int combination = 0; combination < combinations.Length; combination++)
+            {
+                string name = $"TriangleRefLit_{combination}";
+                string path = $"{ReferenceMaterialFolder}/{name}.mat";
+
+                var material = AssetDatabase.LoadAssetAtPath<Material>(path);
+                if (material == null)
+                {
+                    material = new Material(lit);
+                    AssetDatabase.CreateAsset(material, path);
+                }
+                else
+                {
+                    material.shader = lit;
+                }
+
+                // Every multi_compile value, so the surviving set spans the whole axis rather
+                // than one arbitrary point on it.
+                for (int axis = 0; axis < multiCompile.Length; axis++)
+                {
+                    foreach (string keyword in multiCompile[axis])
+                    {
+                        if (keyword == "_")
+                        {
+                            continue;
+                        }
+
+                        material.EnableKeyword(keyword);
+                    }
+                }
+
+                // Reset the local features, then enable this combination's. Not resetting
+                // would accumulate keywords across runs, because the asset persists and
+                // EnableKeyword is not idempotent across a reload.
+                for (int i = 0; i < localFeatures.Length; i++)
+                {
+                    material.DisableKeyword(localFeatures[i]);
+                }
+
+                foreach (string keyword in combinations[combination])
+                {
+                    material.EnableKeyword(keyword);
+                }
+
+                // Instancing on, so the terrain's 900 instanced trees keep their variants
+                // even though no tree material exists at build time.
+                material.enableInstancing = true;
+
+                EditorUtility.SetDirty(material);
+                written++;
+            }
+
+            // The post-processing variants are handled separately and unconditionally, by
+            // the URP global setting the installer already turns off. Those are variants of
+            // the post shaders rather than of Lit, so a handful of reference materials would
+            // not cover them.
+            TriangleLog.Log($"{written} reference material(s) written to keep URP Lit variants alive.");
+        }
+
+        /// <summary>
+        /// Clears Always Included Shaders, and explains why it must stay empty.
+        ///
+        /// It is the obvious place to solve "the URP Lit shader is stripped from the build",
+        /// and it is the wrong one. Always Included keeps *every* variant of the listed
+        /// shader. URP Lit has 6912 variants in its first pass and 66,060,288 once the
+        /// multi_compile sets are fully expanded, and Unity refuses to build at all when an
+        /// Always Included shader exceeds its limit. Two builds were spent discovering that:
+        /// the first failed naming Simple Lit at 1,032,192 variants, and the second failed
+        /// naming Lit at 66,060,288.
+        ///
+        /// The mechanism that does work is the reference materials in Resources. A packed
+        /// material drags its shader into the build and keeps the variants that material's
+        /// keywords imply - which is exactly the set the material factory can produce, and
+        /// nothing else. That is a bounded set, which is the entire reason to prefer it.
+        ///
+        /// Kept as a method rather than deleted because "the shader is missing, add it here"
+        /// is the instinct this file exists to overrule, and the reason belongs next to the
+        /// place someone will look.
+        /// </summary>
+        private static void AssignAlwaysIncludedShaders()
+        {
+            UnityEngine.Object[] settings = AssetDatabase.LoadAllAssetsAtPath(
+                "ProjectSettings/GraphicsSettings.asset");
+            if (settings == null || settings.Length == 0)
+            {
+                WarnMissing("asset", "ProjectSettings/GraphicsSettings.asset", "always included shaders");
+                return;
+            }
+
+            var so = new SerializedObject(settings[0]);
+            SerializedProperty included = so.FindProperty("m_AlwaysIncludedShaders");
+            if (included == null || !included.isArray)
+            {
+                WarnMissing("array", "m_AlwaysIncludedShaders", "(nothing to clear)");
+                return;
+            }
+
+            // Cleared rather than left alone. The engine's own defaults are present in a new
+            // project, and none of them is used - the game renders through URP and nothing
+            // else - so every one of them is variant memory spent on nothing.
+            included.ClearArray();
+
+            // SetDirty as well as Apply: a ProjectSettings object does not go through the
+            // normal asset pipeline, so without it the in-memory edit is discarded when the
+            // editor exits and the file on disk keeps its old contents. The failure is
+            // silent and only shows up as a build that is mysteriously still over its
+            // variant limit.
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            // Not SetDirty. Graphics settings live in ProjectSettings and are not written by
+            // the ordinary asset pipeline, so marking the object dirty is neither necessary
+            // nor sufficient to persist them. An explicit SaveAssets flushes them.
+            //
+            // Verified by reading the file back, because this does not report failure when it
+            // is skipped - the in-memory array is simply correct and the file is not.
+            AssetDatabase.SaveAssets();
         }
 
         // --- Serialized field writes ------------------------------------------------------

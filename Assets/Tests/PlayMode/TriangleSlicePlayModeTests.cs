@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.Generic;
 using NUnit.Framework;
 using Triangle.Audio;
@@ -66,6 +66,77 @@ namespace Triangle.Tests
             {
                 yield return null;
             }
+        }
+
+        /// <summary>
+        /// Waits a real-time span, independent of the frame rate.
+        ///
+        /// The suite's existing waits are counted in frames, because several tests pause the
+        /// game and a <c>Time.deltaTime</c> wait can then never elapse. But frames are only a
+        /// proxy for elapsed time: in a batchmode PlayMode run the editor renders far faster
+        /// than real time, so ninety frames can be a few tens of milliseconds. Any assertion
+        /// about a duration in seconds - a scheduler's delay, the hum's presence ramp, the
+        /// interaction finder's 0.08 s scan - therefore fails in batchmode while passing in
+        /// the editor, which is the worst possible split.
+        ///
+        /// Unscaled, so it keeps running while the game is paused. Bounded by
+        /// <paramref name="maxFrames"/> so a condition that never arrives reports an assertion
+        /// rather than hanging the run, which would produce no results file at all.
+        /// </summary>
+        private static IEnumerator WaitRealtime(float seconds, int maxFrames = 3000)
+        {
+            float deadline = Time.realtimeSinceStartup + seconds;
+            int frames = 0;
+
+            while (Time.realtimeSinceStartup < deadline && frames < maxFrames)
+            {
+                frames++;
+                yield return null;
+            }
+        }
+
+        /// <summary>
+        /// Waits until a condition holds, measured in real time rather than frames.
+        ///
+        /// The combination the time-based tests actually need: it survives a paused game and
+        /// it does not depend on the frame rate.
+        /// </summary>
+        private static IEnumerator WaitRealtimeUntil(System.Func<bool> condition, float seconds)
+        {
+            float deadline = Time.realtimeSinceStartup + seconds;
+
+            while (Time.realtimeSinceStartup < deadline && !condition())
+            {
+                yield return null;
+            }
+        }
+
+        /// <summary>
+        /// Finds a GameObject by name whether or not it is active.
+        ///
+        /// <c>GameObject.Find</c> only returns active objects, and several of the objects
+        /// these tests need are deliberately hidden when idle: the HUD deactivates the
+        /// subtitle whenever no line is showing and the pause text whenever the game is not
+        /// paused. That is correct behaviour - a pause overlay must not sit over a running
+        /// game - and it means those tests were asserting against a search that could never
+        /// find them. Eleven of them failed for that reason alone, before any of this
+        /// project's rendering work existed.
+        ///
+        /// <c>Resources.FindObjectsOfTypeAll</c> reaches inactive objects, and the type and
+        /// name filter keeps it from matching a stray asset.
+        /// </summary>
+        private static GameObject FindIncludingInactive(string name)
+        {
+            GameObject[] all = Resources.FindObjectsOfTypeAll<GameObject>();
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (all[i] != null && all[i].name == name)
+                {
+                    return all[i];
+                }
+            }
+
+            return null;
         }
 
         [UnitySetUp]
@@ -429,12 +500,11 @@ namespace Triangle.Tests
 
             TriangleRuntime.Director.TriggerTriangleManifest(2f);
 
-            float elapsed = 0f;
-            for (int i = 0; i < 120 && elapsed < 3f; i++)
-            {
-                elapsed += Time.deltaTime;
-                yield return null;
-            }
+            // Real time. The presence ramp is measured in scaled seconds, and the loop this
+            // replaces accumulated Time.deltaTime across a frame cap - which is a duration in
+            // the editor and a few milliseconds in a batchmode run that renders faster than
+            // real time. The ramp never got to rise, so the hum was still at zero.
+            yield return WaitRealtimeUntil(() => TriangleRuntime.Audio.GetHumPresence() > 0.1f, 3f);
 
             Assert.That(TriangleRuntime.Audio.GetHumPresence() > 0.1f,
                 $"The hum did not rise with presence (got {TriangleRuntime.Audio.GetHumPresence():0.00}).");
@@ -442,12 +512,7 @@ namespace Triangle.Tests
             // A wake withdraws everything, and the hum must fall with it.
             TriangleRuntime.Director.WithdrawPresence();
 
-            elapsed = 0f;
-            for (int i = 0; i < 120 && elapsed < 3f; i++)
-            {
-                elapsed += Time.deltaTime;
-                yield return null;
-            }
+            yield return WaitRealtimeUntil(() => TriangleRuntime.Audio.GetHumPresence() < 0.2f, 3f);
 
             Assert.That(TriangleRuntime.Audio.GetHumPresence() < 0.2f,
                 $"The hum did not fall when presence was withdrawn (got {TriangleRuntime.Audio.GetHumPresence():0.00}).");
@@ -727,10 +792,16 @@ namespace Triangle.Tests
         {
             yield return null;
 
+            // Lucidity is set explicitly before the first write, because the backup holds the
+            // *first* save - and that save's lucidity is whatever the previous test left
+            // behind. Asserting it is greater than zero therefore depended on test ordering:
+            // it passed when an earlier test had raised lucidity and failed when one had not.
+            TriangleRuntime.Player.Lucidity.RestoreFromSave(42f);
+
             // Write twice: the second write rotates the first into the backup slot.
             TriangleRuntime.Save.SaveNow(null);
             var keeper = TriangleRuntime.Save.BuildSnapshot();
-            keeper.Lucidity = 42f;
+            keeper.Lucidity = 77f;
             TriangleRuntime.Save.SaveNow(keeper);
 
             Assert.That(TriangleRuntime.Save.HasBackup, "No backup was retained after a second save.");
@@ -741,8 +812,12 @@ namespace Triangle.Tests
 
             var recovered = TriangleRuntime.Save.LoadNow();
             Assert.That(recovered != null, "A damaged save did not fall back to its backup.");
-            Assert.That(recovered.Lucidity > 0f,
-                "The recovered backup was blank, so the fallback restored nothing.");
+
+            // The backup is the *first* write, so it must come back as 42 - not merely as
+            // something non-zero. Asserting the exact value is what distinguishes a real
+            // fallback from a loader that quietly handed back a default-constructed object.
+            Assert.That(recovered.Lucidity == 42f,
+                $"The recovered backup was not the first save (lucidity {recovered.Lucidity:0.0}, expected 42).");
         }
 
         [UnityTest]
@@ -942,11 +1017,10 @@ namespace Triangle.Tests
             player.Teleport(stand, Quaternion.identity);
             player.AimAt(target);
 
-            // The finder runs on a 0.08 s timer.
-            for (int i = 0; i < 20; i++)
-            {
-                yield return null;
-            }
+            // The finder runs on a 0.08 s timer, so wait for it in real time. Twenty frames is not a
+            // duration: in a batchmode run that renders faster than real time it can be a
+            // couple of milliseconds, which is shorter than the finder's first tick.
+            yield return WaitRealtime(0.4f);
 
             Assert.That(player.FocusedInteractable != null,
                 "The interaction finder did not focus the notebook the player is looking at.");
@@ -978,7 +1052,11 @@ namespace Triangle.Tests
             TriangleRuntime.Hud.SetPaused(true);
             Assert.That(Time.timeScale <= 0f, "The pause menu did not actually stop scaled time.");
 
-            yield return WaitFrames(90);
+            // Real time, not frames. Ninety frames is a quarter of a second at 60 fps and a
+            // few milliseconds in a batchmode run that renders far faster than real time,
+            // which is why this asserted against a frame count and failed in batch while
+            // passing in the editor.
+            yield return WaitRealtime(0.6f);
 
             TriangleRuntime.Hud.SetPaused(false);
 
@@ -999,17 +1077,20 @@ namespace Triangle.Tests
 
             TriangleRuntime.Hud.SetPaused(true);
 
-            // Frame-counted, not time-counted. This test pauses the game, so any wait
-            // measured in scaled time can never elapse - a scaled loop here spins
-            // forever and takes the whole suite down with it, which is exactly how this
-            // test was written the first time.
-            yield return WaitFrames(60);
+            // Real time rather than frames, for two independent reasons. The test pauses the
+            // game, so a scaled wait can never elapse - and a frame count is not a duration
+            // at all, because a batchmode run renders far faster than real time. Sixty frames
+            // is a second in the editor and a few milliseconds in batch, which is why this
+            // assertion passed locally and failed in CI.
+            yield return WaitRealtime(0.5f);
 
             Assert.That(!fired, "A scaled callback fired while the game was paused.");
 
             TriangleRuntime.Hud.SetPaused(false);
 
-            yield return WaitFrames(60);
+            // The callback is on scaled time, so it only advances once time is running again.
+            // The wait is real-time and bounded, so it survives the pause and cannot hang.
+            yield return WaitRealtimeUntil(() => fired, 1.5f);
 
             Assert.That(fired, "The scaled callback did not fire after the pause was lifted.");
         }
@@ -1060,14 +1141,29 @@ namespace Triangle.Tests
             TrianglePlayer player = TriangleRuntime.Player;
             player.Recognition.RestoreFromSaveWithCatalogue(80f, new List<string> { "CornerPoint" });
 
-            // Pause first. Every attempt below therefore runs on a frame where scaled
-            // time is frozen, so this is exactly the exploit: on the old scaled cooldown
-            // the clock never advanced and every one of these would be accepted.
+            // The cooldown is only armed by a wake that actually happened, so one has to
+            // occur before the exploit can be attempted. The previous version went straight
+            // to the paused loop and asserted that no wake was ever accepted - which
+            // requires the cooldown to already be running, and on a fresh manager it is not,
+            // so the first attempt legitimately succeeded and the test reported a leak that
+            // was really a missing precondition.
+            Assert.That(TriangleRuntime.Wake.TryWake(),
+                "The opening wake was refused, so there is no cooldown to test.");
+
+            // Pause immediately. Every attempt below therefore runs on a frame where scaled
+            // time is frozen, which is exactly the exploit: on the old scaled cooldown the
+            // clock never advanced and each of these would be accepted.
             TriangleRuntime.Hud.SetPaused(true);
 
+            // Real time, bounded, rather than a frame cap. The cooldown is four seconds of unscaled
+            // time, so the loop has to actually span a measurable duration - 120 frames is two
+            // seconds in the editor and a few milliseconds in batchmode, which is why this
+            // reported a leak in CI and passed locally.
             bool leaked = false;
             int attempts = 0;
-            for (int frame = 0; frame < 120; frame++)
+            float deadline = Time.realtimeSinceStartup + 2f;
+
+            while (Time.realtimeSinceStartup < deadline)
             {
                 attempts++;
                 if (TriangleRuntime.Wake.TryWake())
@@ -1108,10 +1204,9 @@ namespace Triangle.Tests
             player.Teleport(target + new Vector3(0f, 0f, -1.0f), Quaternion.identity);
             player.AimAt(target);
 
-            for (int i = 0; i < 20; i++)
-            {
-                yield return null;
-            }
+            // Real time, for the interaction finder's 0.08 s scan interval. See the note on the
+            // identical wait in TheInteractionFinderFocusesWhatThePlayerLooksAt.
+            yield return WaitRealtime(0.4f);
 
             Assert.That(player.FocusedInteractable != null, "The finder did not focus the notebook.");
 
@@ -1121,7 +1216,7 @@ namespace Triangle.Tests
                 $"The interaction hint '{hint}' is not presented as a key hint.");
 
             // And the prompt on screen must be the HUD's hint, not a copy of it.
-            var actionText = GameObject.Find("InteractionAction");
+            var actionText = FindIncludingInactive("InteractionAction");
             Assert.That(actionText != null, "The HUD built no interaction action label.");
             var label = actionText.GetComponent<Text>();
             Assert.That(label.text == hint,
@@ -1203,7 +1298,7 @@ namespace Triangle.Tests
             TriangleRuntime.Anomalies.Spawn(TriangleAnomalyKind.TriangularGap, 3f,
                 TriangleRuntime.Player.transform.position);
 
-            var root = GameObject.Find("TriangleAnomalies");
+            var root = FindIncludingInactive("TriangleAnomalies");
             Assert.That(root != null, "No intrusion root was created for a spawned anomaly.");
 
             Assert.That(root.transform.parent != null,
@@ -1240,7 +1335,7 @@ namespace Triangle.Tests
             float originalScale = TriangleAccessibility.SubtitleScale;
             float originalOpacity = TriangleAccessibility.SubtitleOpacity;
 
-            var subtitle = GameObject.Find("Subtitle");
+            var subtitle = FindIncludingInactive("Subtitle");
             Assert.That(subtitle != null, "The HUD built no subtitle object.");
 
             var text = subtitle.GetComponent<Text>();
@@ -1280,18 +1375,28 @@ namespace Triangle.Tests
             yield return null;
 
             bool original = TriangleAccessibility.SubtitleBackdrop;
-            var backdrop = GameObject.Find("SubtitleBackdrop");
-            var subtitle = GameObject.Find("Subtitle");
+            var backdrop = FindIncludingInactive("SubtitleBackdrop");
+            var subtitle = FindIncludingInactive("Subtitle");
             Assert.That(backdrop != null, "The HUD built no subtitle backdrop.");
 
             try
             {
+                // With no subtitle on screen, enabling the backdrop must not show the plate:
+                // a dark rectangle floating over an empty screen is the failure this test
+                // exists to catch. Both halves of that are asserted, because the previous
+                // version asserted the first and then immediately contradicted it with the
+                // second - so it could only ever fail.
                 TriangleAccessibility.SubtitleBackdrop = true;
-                Assert.That(backdrop.activeSelf, "Enabling the backdrop did not show it.");
-
-                // No subtitle is showing, so the plate must be hidden even when enabled.
                 Assert.That(!backdrop.activeSelf,
                     "The backdrop is visible with no subtitle on screen.");
+
+                // And with a subtitle showing, the plate must appear. Without this half the
+                // test would pass on a HUD that never showed a backdrop at all.
+                TriangleRuntime.Hud.PushSubtitle("A line of dream text.", 2f);
+                yield return null;
+
+                Assert.That(backdrop.activeSelf,
+                    "Enabling the backdrop did not show it alongside a subtitle.");
             }
             finally
             {
@@ -1318,29 +1423,29 @@ namespace Triangle.Tests
             Assert.That(calmState == TriangleAudioDirector.StateCalm,
                 $"The dream bed did not start calm (it is '{calmState}').");
 
-            // Force a manifestation, which drives presence up and the bed down with it.
+            // The presence ramp is in scaled seconds and the fade that follows it is real
+            // seconds, so the wait has to be too. A frame cap is not a duration: 300 frames
+            // is five seconds in the editor and a few milliseconds in a batchmode run, which
+            // is why this reported the bed as never reacting.
             TriangleRuntime.Director.TriggerTriangleManifest(4f);
 
-            // Frame-bounded. The bed's state change is driven by a director event rather
-            // than a timer, so it lands on a frame rather than after a span of time, and
-            // a condition that never fires has to report as an assertion rather than run
-            // the suite's clock down.
-            yield return WaitUntil(
+            yield return WaitRealtimeUntil(
                 () => TriangleRuntime.Audio.CurrentState != calmState,
-                maxFrames: 300);
+                3f);
 
             Assert.That(TriangleRuntime.Audio.CurrentState != TriangleAudioDirector.StateCalm,
                 "The dream bed never left its calm state while The Triangle was present.");
             Assert.That(TriangleRuntime.Audio.CurrentVolume < 0.4f,
                 $"The bed did not duck for the presence (volume {TriangleRuntime.Audio.CurrentVolume:0.00}).");
 
-            // And it must come back when the presence withdraws. The recovery fade is
-            // real time, so this one does need a generous budget.
+            // And it must come back when the presence withdraws. The recovery fade is real
+            // time, so this one needs a generous budget - measured in seconds, for the same
+            // reason as above.
             TriangleRuntime.Director.WithdrawPresence();
 
-            yield return WaitUntil(
+            yield return WaitRealtimeUntil(
                 () => TriangleRuntime.Audio.CurrentState == TriangleAudioDirector.StateCalm,
-                maxFrames: 900);
+                6f);
 
             Assert.That(TriangleRuntime.Audio.CurrentState == TriangleAudioDirector.StateCalm,
                 "The dream bed did not return to calm after the presence withdrew.");

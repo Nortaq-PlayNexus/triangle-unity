@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using Triangle.Core;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -334,7 +334,7 @@ namespace Triangle.World
             host.StartCoroutine(RefreshAfter(probe, frames));
         }
 
-        private static System.Collections.IEnumerator RefreshAfter(ReflectionProbe probe, int frames)
+        private static IEnumerator RefreshAfter(ReflectionProbe probe, int frames)
         {
             for (int i = 0; i < Mathf.Max(1, frames); i++)
             {
@@ -348,67 +348,29 @@ namespace Triangle.World
         }
 
         /// <summary>
-        /// Builds a light probe group for a room.
+        /// Whether runtime light probes are usable in this project. They are not.
         ///
-        /// URP has no local probe volumes, and runtime lightmap baking does not exist in a
-        /// player - Lightmapping is an editor-only API. So the ambient a room's geometry sees
-        /// has to come from either the scene's ambient probe or a group of explicitly placed
-        /// probes. A group costs almost nothing and gives the corners of a room something
-        /// other than the same flat value every surface already has.
-        /// </summary>
-        public static LightProbeGroup CreateProbeGroup(GameObject host, Vector3[] positions)
-        {
-            var probeObject = new GameObject("LightProbeGroup");
-            probeObject.transform.SetParent(host.transform, false);
-
-            var group = probeObject.AddComponent<LightProbeGroup>();
-
-            // Probes are positioned in the group's local space, and the group sits at the
-            // environment's origin, so world positions carry over directly.
-            //
-            // Assigned as a whole array rather than index by index: LightProbeGroup has no
-            // public SetProbePosition, so a per-probe write is not available at all.
-            group.probePositions = positions ?? System.Array.Empty<Vector3>();
-
-            return group;
-        }
-
-        /// <summary>
-        /// Reports that a probe group cannot be filled at runtime.
+        /// Recorded as a constant rather than omitted, because the limitation is not
+        /// obvious and the component looks available: LightProbeGroup can be added to a
+        /// GameObject at runtime, and probePositions appears settable in the editor.
         ///
-        /// Kept as a call rather than removed, so the builders that invoke it document the
-        /// intent and a future Unity that exposes SetProbes has somewhere obvious to plug in.
+        /// Two things stop it working, and the first was only found by building a player
+        /// rather than by reading the documentation:
+        ///
+        ///   - <c>LightProbeGroup.probePositions</c> is compiled behind UNITY_EDITOR. The
+        ///     assignment compiles cleanly in the editor and fails the player build with
+        ///     "property or indexer cannot be assigned to -- it is read only".
+        ///   - There is no public way to write a probe's spherical harmonics at all, so a
+        ///     group whose positions were somehow set would still carry white probes, which
+        ///     in a room this dark washes out every surface near them - worse than having no
+        ///     group at all.
+        ///
+        /// Baked lighting would solve this properly and is equally unavailable: the world is
+        /// assembled at runtime and Unity's Lightmapping API is editor-only. So this scene's
+        /// indirect light is the ambient probe plus the dim fill lights the builders place by
+        /// hand, which stand in for a single bounce off the floor and ceiling.
         /// </summary>
-        /// <remarks>
-        /// Spherical harmonics cannot be written to a LightProbeGroup from a player build.
-        /// Without this the probes sit at their default value, which is white - and white
-        /// probes in a room this dark wash everything near them out. Copying the ambient
-        /// probe's spherical harmonics into each one makes the group consistent with the
-        /// atmosphere component that owns the room's lighting.
-        /// </summary>
-        public static void BakeAmbientInto(LightProbeGroup group)
-        {
-            if (group == null)
-            {
-                return;
-            }
-
-            // LightProbeGroup exposes only probePositions in 2022.3 - there is no public
-            // SetProbes, and no runtime way to write a probe's spherical harmonics.
-            //
-            // That matters: a probe left at its default is white, and in a room this dark a
-            // group of white probes washes out every surface near them - strictly worse than
-            // having no group at all. Rather than ship that, the group is left unconfigured
-            // and this reports it.
-            //
-            // The real fix is baked lighting, which this project cannot have: the world is
-            // assembled at runtime and Unity's Lightmapping API is editor-only, so there is
-            // no lightmap for a probe to interpolate. Ambient light and the probe volume the
-            // platform asset provides are what this scene has instead.
-            TriangleLog.Verbose(
-                $"Light probe group placed with {group.probePositions.Length} probe(s); " +
-                "leaving them unset so they sample the ambient probe rather than a white default.");
-        }
+        public const bool RuntimeLightProbesAvailable = false;
 
         /// <summary>
         /// Whether the render pipeline is actually URP.

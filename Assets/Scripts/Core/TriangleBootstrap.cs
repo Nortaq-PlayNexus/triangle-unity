@@ -131,6 +131,94 @@ namespace Triangle.Core
             }
         }
 
+        /// <summary>
+        /// Captures the frame to a PNG and quits, when asked to on the command line.
+        ///
+        /// This exists because the whole project is procedural and every visual decision is
+        /// invisible in a log. "The texture contrast was raised to 34%" is a claim; a
+        /// screenshot of the spawn view is evidence, and it is the only evidence available
+        /// for a headless build.
+        ///
+        /// <c>-triangleShot &lt;path&gt; [-triangleShotFrames &lt;n&gt;] [-triangleShotEnv &lt;id&gt;]</c>
+        ///
+        /// The frame count exists because the dream assembles in one frame and the volume
+        /// stack needs a frame to apply - a capture on frame one shows the world before
+        /// tonemapping. Waiting is cheaper than guessing the number.
+        /// </summary>
+        private void StartScreenshotCapture()
+        {
+            string path = ReadArgument("-triangleShot");
+            if (string.IsNullOrEmpty(path))
+            {
+                return;
+            }
+
+            int frames = Mathf.Max(1, ReadIntArgument("-triangleShotFrames", 8));
+            string environment = ReadArgument("-triangleShotEnv");
+
+            StartCoroutine(CaptureAfterFrames(path, frames, environment));
+        }
+
+        private System.Collections.IEnumerator CaptureAfterFrames(string path, int frames, string environment)
+        {
+            // An optional environment override, so one build can photograph every room.
+            if (!string.IsNullOrEmpty(environment) && TriangleRuntime.GameFlow != null &&
+                TriangleGameFlow.IsKnownEnvironmentId(environment))
+            {
+                TriangleRuntime.GameFlow.EnsureEnvironment(TriangleGameFlow.EnvironmentForId(environment));
+
+                // The swap is immediate but the builder's Awake runs synchronously, so one
+                // frame is enough for the world to exist and another for the probes.
+                yield return null;
+                yield return null;
+            }
+
+            // Wait out the requested frames. Unaffected by timescale, because the capture has
+            // to happen even if something has paused the game.
+            for (int i = 0; i < frames; i++)
+            {
+                yield return new WaitForEndOfFrame();
+            }
+
+            ScreenCapture.CaptureScreenshot(path);
+            TriangleLog.Log($"Screenshot written to {path}.");
+
+            // A frame for the capture to land on disk before the process exits.
+            yield return null;
+
+            if (Application.isBatchMode)
+            {
+                Application.Quit();
+            }
+        }
+
+        private static string ReadArgument(string name)
+        {
+            try
+            {
+                string[] args = Environment.GetCommandLineArgs();
+                for (int i = 0; i < args.Length - 1; i++)
+                {
+                    if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return args[i + 1];
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                TriangleLog.Verbose("Command line unavailable: " + e.Message);
+            }
+
+            return null;
+        }
+
+        private static int ReadIntArgument(string name, int fallback)
+        {
+            string raw = ReadArgument(name);
+            return int.TryParse(raw, out int parsed) ? parsed : fallback;
+        }
+
         [Header("Frame pacing")]
         [Tooltip("Frames per second ceiling. Ignored while V Sync is on, which takes priority.")]
         [SerializeField] private int targetFrameRate = 60;
@@ -215,6 +303,8 @@ namespace Triangle.Core
             }
 
             TriangleLog.Log("The dream begins.");
+
+            StartScreenshotCapture();
 
             // Everything above is procedural content generation and world assembly, and
             // all of it lands on this single frame. The per-kind figures are logged as

@@ -400,7 +400,19 @@ namespace Triangle.World
             GameObject window = AddBox(new Vector3(0f, windowCentreY, wallFace + 0.035f),
                 new Vector3(paneWidth, paneHeight, 0.02f), null, Color.white);
             window.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetEmissiveMaterial(
-                new Color(0.58f, 0.70f, 0.96f), 3.2f);
+                new Color(0.52f, 0.64f, 0.88f), 1.35f);
+
+            // Held well below the level that clips to white.
+            //
+            // The pane is the brightest thing in a room where everything else sits near 0.1,
+            // and the tonemapping curve puts anything much above 2.0 at the top of its range -
+            // at which point the window is a featureless white rectangle that reads as a light
+            // box rather than as a view onto a moonlit night. An earlier build ran this at 3.2
+            // and the pane blew out completely, taking the frame, the glazing bars and the
+            // reveal detail with it.
+            //
+            // 1.35 keeps it clearly the brightest surface while leaving headroom for bloom to
+            // spread a glow around it rather than swallow it.
 
             // Glazing bars. A window is not one pane, and the bars are what give the
             // emissive rectangle internal structure - without them a bright rectangle is a
@@ -819,37 +831,43 @@ namespace Triangle.World
             keyObject.transform.rotation = Quaternion.Euler(12f, 0f, 0f);
 
             Light key = TriangleLighting.Create(keyObject, LightType.Spot,
-                new Color(0.56f, 0.70f, 0.98f), 5.2f, 11f, Vector3.zero,
+                new Color(0.56f, 0.70f, 0.98f), 9.5f, 14f, Vector3.zero,
                 TriangleLighting.LayerKey, LightShadows.Soft);
 
-            // Wide enough to fill the room. A narrow cone would light a bright ellipse and
-            // leave the rest black, which is the same failure as no light at all.
-            key.spotAngle = 118f;
-            key.innerSpotAngle = 62f;
+            // Wide enough to fill the room. A narrow cone lights a bright ellipse and leaves
+            // the rest black, which is the same failure as no light at all.
+            key.spotAngle = 135f;
+            key.innerSpotAngle = 70f;
 
-            // The rectangle cookie is what makes this read as a window rather than a bulb.
-            // Held on the builder so OnDestroy can reclaim it.
+            // Aimed further down than before. The window is at 1.55 m in a 3 m room, so the
+            // light has to be tipped to reach the floor in front of it rather than the far
+            // wall - and the floor is where the pool of moonlight has to be for the room to
+            // read as lit from a window.
+            keyObject.transform.rotation = Quaternion.Euler(20f, 0f, 0f);
+
+            // The rectangle cookie is what makes this read as a window rather than a bulb. Held on
+            // the builder so OnDestroy can reclaim it.
             _windowCookie = TriangleLighting.RectangularCookie(256, 0.55f, 0.16f);
             TriangleLighting.ApplyCookie(key, _windowCookie, new Vector2(1.5f, 1.7f));
 
             key.shadowStrength = 0.9f;
 
-            // A second, wider and much dimmer spot for the wash near the window, with no
-            // shadows. Two lights rather than one wider cone because a single wide spot has
-            // to be bright enough at the window to light the near wall, and then the far
-            // corners get the same brightness as the window itself.
+            // The floor pool. A separate shadowless spot tipped steeply at the floor in front
+            // of the window, rather than one wider cone trying to do both jobs: a single spot
+            // bright enough to reach the floor overpowers the near wall, and one aimed at the
+            // near wall leaves the floor black. Two lights, two purposes.
             var washObject = Track(new GameObject("WindowWash"));
             washObject.transform.SetParent(transform, false);
             washObject.transform.position = new Vector3(0f, 1.62f, -roomHalfZ + 0.55f);
-            washObject.transform.rotation = Quaternion.Euler(22f, 0f, 0f);
+            washObject.transform.rotation = Quaternion.Euler(48f, 0f, 0f);
 
             Light wash = TriangleLighting.Create(washObject, LightType.Spot,
-                new Color(0.44f, 0.56f, 0.86f), 1.5f, 9f, Vector3.zero,
+                new Color(0.44f, 0.56f, 0.86f), 3.2f, 8f, Vector3.zero,
                 TriangleLighting.LayerKey);
-            wash.spotAngle = 150f;
-            wash.innerSpotAngle = 20f;
+            wash.spotAngle = 120f;
+            wash.innerSpotAngle = 30f;
             TriangleLighting.ApplyCookie(wash, TriangleLighting.RectangularCookie(128, 0.75f, 0.1f),
-                new Vector2(2.4f, 2.6f));
+                new Vector2(2.8f, 3.0f));
 
             // A very dim cool bounce off the floor, so the ceiling is not pitch black. This
             // is standing in for the one bounce of light a real room would have, and there
@@ -878,17 +896,13 @@ namespace Triangle.World
         }
 
         /// <summary>
-        /// Places the room's reflection probe and light probes.
+        /// Places the room's reflection probe.
         ///
         /// URP evaluates at most two reflection probes per pixel and blends them, so one per
         /// room is affordable. Box projection is what makes the cubemap respect the room's
-        /// walls: without it the probe behaves as an infinite sphere from its own centre and
-        /// every reflective surface shows a reflection that is only correct in one spot.
-        ///
-        /// The light probes matter more than they look. URP has no local probe volumes and
-        /// runtime lightmap baking does not exist in a player, so without an explicit group
-        /// every surface in the room receives the same flat ambient - which is a large part of
-        /// why the corners of this room read as one flat value.
+        /// walls: without it the probe behaves as an infinite sphere from its own centre, so
+        /// every reflective surface in the room shows a reflection that is only correct at
+        /// one spot.
         /// </summary>
         private void BuildProbes()
         {
@@ -902,28 +916,20 @@ namespace Triangle.World
             // sees already contains the room rather than the default skybox.
             TriangleLighting.RefreshWhenSettled(probe, this);
 
-            // Eight probes: the four upper corners, the four lower, and the centre of each
-            // face region. A tetrahedral arrangement would be fewer, but a corner and a
-            // centre are both where this room's values differ most, and eight costs nothing.
-            var group = TriangleLighting.CreateProbeGroup(Track(new GameObject("RoomLightProbes")),
-                new[]
-                {
-                    new Vector3(0f, roomHeight - 0.25f, 0f),
-                    new Vector3(-roomHalfX + 0.3f, roomHeight - 0.25f, -roomHalfZ + 0.3f),
-                    new Vector3(roomHalfX - 0.3f, roomHeight - 0.25f, -roomHalfZ + 0.3f),
-                    new Vector3(-roomHalfX + 0.3f, roomHeight - 0.25f, roomHalfZ - 0.3f),
-                    new Vector3(roomHalfX - 0.3f, roomHeight - 0.25f, roomHalfZ - 0.3f),
-                    new Vector3(0f, 0.5f, 0f),
-                    new Vector3(-roomHalfX + 0.3f, 0.5f, -roomHalfZ + 0.3f),
-                    new Vector3(roomHalfX - 0.3f, 0.5f, -roomHalfZ + 0.3f),
-                    new Vector3(-roomHalfX + 0.3f, 0.5f, roomHalfZ - 0.3f),
-                    new Vector3(roomHalfX - 0.3f, 0.5f, roomHalfZ - 0.3f)
-                });
+            // Forced to render, which is what pulls the engine's cubemap shaders into the
+            // build. ReflectionProbe bakes a cube through Hidden/CubeCopy, CubeBlend and
+            // CubeBlur, and Unity only includes a built-in resource when something in the
+            // build references it - so a probe that is merely present but never baked logs
+            // "Shader Hidden/CubeCopy not found" every run and contributes nothing.
+            //
+            // Baking once at Awake is the cheapest way to make the dependency explicit, and
+            // it happens before the first frame is presented anyway.
+            probe.RenderProbe();
 
-            // The probes themselves cannot be filled at runtime, which TriangleLighting
-            // explains. Placed anyway: they bound the region and cost nothing, and a future
-            // baked-lighting pass would populate them.
-            TriangleLighting.BakeAmbientInto(group);
+            // No light probe group, deliberately. TriangleLighting.RuntimeLightProbesAvailable
+            // documents why: probePositions is editor-only, and a group's harmonics cannot
+            // be written at runtime at all. The room's indirect light comes from the ambient
+            // probe above plus the two dim fills placed in BuildLighting.
         }
     }
 }
