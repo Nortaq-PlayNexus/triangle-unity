@@ -43,10 +43,22 @@ namespace Triangle.Dream
         [SerializeField] private float humFadeSeconds = 0.8f;
         [Range(3f, 60f)] [SerializeField] private float masterSenseInterval = 9f;
 
-        private const int MaxManifestations = 6;
+        /// <summary>Farthest the player can be and still count as witnessing a body.</summary>
+        private const float WitnessRange = 40f;
+
+        /// <summary>
+        /// Duration used when the corner point must simply stay up - at Maximum Lucidity
+        /// it stops hiding. Long enough that it will not resolve during a play session,
+        /// and named because the raw literal appeared at two separate call sites.
+        /// </summary>
+        private const float PermanentManifestSeconds = 9999f;
+
+        /// <summary>Seconds the Platform 12 train's doors stay open after the motif.</summary>
+        private const float TrainDoorHoldSeconds = 8f;
 
         private readonly List<TriangleManifestationDefinition> _pool = new List<TriangleManifestationDefinition>();
         private readonly Dictionary<string, float> _manifestCooldowns = new Dictionary<string, float>();
+        private readonly List<string> _cooldownKeys = new List<string>();
 
         // --- Events visible/extensible to other systems -------------------------
 
@@ -86,9 +98,13 @@ namespace Triangle.Dream
         private bool _maximumPointReapplied;
         private bool _schedulingStarted;
         private bool _cornerHintShown;
+        private bool _motifsHooked;
+        private bool _wakeHooked;
 
         private TriangleAnomalyActor _activeAnomaly;
         private TriangleManifestationDefinition _activeDefinition;
+        private TriangleManifestationDefinition _pendingDefinition;
+        private int _pendingSerial;
         private bool _currentAnomalyWasWitnessed;
         private bool _currentPointWasWitnessed;
 
@@ -222,6 +238,8 @@ namespace Triangle.Dream
                 _boundEvents = true;
             }
 
+            bool ready = _playerActor != null && _playerLucidity != null && _playerRecognition != null && _cornerPoint != null;
+
             TriangleMotifSystem motifs = TriangleRuntime.Motifs;
             if (motifs != null && !_motifsHooked)
             {
@@ -239,11 +257,9 @@ namespace Triangle.Dream
                 _wakeHooked = true;
             }
 
-            bool ready = _playerActor != null && _playerLucidity != null && _playerRecognition != null && _cornerPoint != null;
-            if (ready && !_maximumPointReapplied && _playerLucidity != null
-                && _playerLucidity.GetLucidityLevel() == TriangleLucidityLevel.Maximum)
+            if (ready && !_maximumPointReapplied && _playerLucidity.GetLucidityLevel() == TriangleLucidityLevel.Maximum)
             {
-                _cornerPoint.Manifest(9999f);
+                _cornerPoint.Manifest(PermanentManifestSeconds);
                 _manifestationActive = true;
                 _humEnabledForCurrentManifestation = true;
                 _currentHumTarget = Mathf.Max(_currentHumTarget, 0.65f);
@@ -252,9 +268,6 @@ namespace Triangle.Dream
 
             return ready;
         }
-
-        private bool _motifsHooked;
-        private bool _wakeHooked;
 
         // --- Manifestation pool ---------------------------------------------------
 
@@ -353,8 +366,6 @@ namespace Triangle.Dream
             _cooldownKeys.Clear();
         }
 
-        private readonly List<string> _cooldownKeys = new List<string>();
-
         // --- Corner watching -------------------------------------------------------
 
         private void WatchCorner(float deltaSeconds)
@@ -429,14 +440,17 @@ namespace Triangle.Dream
                     continue;
                 }
 
-                if (senseOnly && definition.Kind != TriangleManifestationKind.HumOnly)
+                // The human form is reserved for a later chapter and is never spawned,
+                // in either selection mode. The previous version only excluded it on the
+                // !senseOnly branch, so a sense-only pick could have reached it.
+                if (definition.Kind == TriangleManifestationKind.HumanForm)
                 {
                     continue;
                 }
 
-                if (!senseOnly && definition.Kind == TriangleManifestationKind.HumanForm)
+                if (senseOnly && definition.Kind != TriangleManifestationKind.HumOnly)
                 {
-                    continue; // reserved for later chapters
+                    continue;
                 }
 
                 if (_manifestCooldowns.TryGetValue(definition.ManifestId, out float remaining) && remaining > 0f)
@@ -474,8 +488,36 @@ namespace Triangle.Dream
                 selectedIndex = candidates.Count - 1;
             }
 
-            TriangleManifestationDefinition chosen = candidates[selectedIndex];
-            float duration = Mathf.Max(2.5f, chosen.GetRandomDuration());
+            StartManifestation(candidates[selectedIndex]);
+        }
+
+        private void StartManifestation(TriangleManifestationDefinition chosen)
+        {
+            if (chosen == null)
+            {
+                return;
+            }
+
+            StartManifestationWithDuration(chosen, Mathf.Max(2.5f, chosen.GetRandomDuration()));
+        }
+
+        /// <summary>
+        /// Runs a chosen body for an explicit duration: spawns it, arms the hum, starts
+        /// the cooldown and defers the resolution.
+        ///
+        /// This is the single entry point for starting a manifestation. The public
+        /// <see cref="TriggerTriangleManifest"/> used to be a near-verbatim second copy
+        /// of this body of work, which is how the two drifted.
+        /// </summary>
+        private void StartManifestationWithDuration(TriangleManifestationDefinition chosen, float duration)
+        {
+            if (chosen == null)
+            {
+                return;
+            }
+
+            // A newer manifestation always wins: cancel the pending resolve and bump the
+            // serial so a callback already in flight for the previous body is ignored.
             CancelInvoke(nameof(ResolveManifestation));
             ++_activeManifestationSerial;
             int manifestationSerial = _activeManifestationSerial;
@@ -483,7 +525,6 @@ namespace Triangle.Dream
             _activeAnomaly = null;
             _activeDefinition = chosen;
             _currentAnomalyWasWitnessed = false;
-
             _currentPointWasWitnessed = false;
             _manifestationActive = true;
 
@@ -539,17 +580,10 @@ namespace Triangle.Dream
 
             OnTriangleManifestation?.Invoke(chosen.ManifestId);
 
-            // Resolving the manifestation is deferred through the same serial-guarded
-            // callback the Unreal director used, so a newer manifestation always wins.
             _pendingDefinition = chosen;
-            _pendingDuration = duration;
             _pendingSerial = manifestationSerial;
             Invoke(nameof(ResolveManifestation), duration);
         }
-
-        private TriangleManifestationDefinition _pendingDefinition;
-        private float _pendingDuration;
-        private int _pendingSerial;
 
         private void ResolveManifestation()
         {
@@ -630,7 +664,7 @@ namespace Triangle.Dream
             Vector3 cameraLocation = camera.transform.position;
             Vector3 toTarget = target - cameraLocation;
             float distance = toTarget.magnitude;
-            if (distance <= 0.01f || distance > 40f)
+            if (distance <= 0.01f || distance > WitnessRange)
             {
                 return false;
             }
@@ -834,49 +868,25 @@ namespace Triangle.Dream
             }
 
             TriangleManifestationDefinition definition = _pool[0];
-            float safeDuration = float.IsNaN(duration) || float.IsInfinity(duration) ? 1f : Mathf.Max(0.25f, duration);
 
+            // Clear whatever is on screen so the forced body is the only one visible.
+            // StartManifestation owns the rest of the sequence, exactly as the weighted
+            // picker does, so there is one implementation of "run this body".
+            TriangleRuntime.Anomalies?.DespawnAll();
             if (_manifestationActive)
             {
-                TriangleRuntime.Anomalies?.DespawnAll();
                 _cornerPoint.Hide();
             }
 
-            CancelInvoke(nameof(ResolveManifestation));
-            ++_activeManifestationSerial;
-            int manifestationSerial = _activeManifestationSerial;
-
-            _cornerPoint.Manifest(safeDuration);
-            _activeAnomaly = null;
-            _activeDefinition = definition;
-            _currentAnomalyWasWitnessed = false;
-
-            _currentPointWasWitnessed = false;
-            _manifestationActive = true;
-
-            bool humWasActive = _humActive;
-            _humEnabledForCurrentManifestation = definition.UseHum;
-            if (!_humEnabledForCurrentManifestation && humWasActive)
+            if (float.IsNaN(duration) || float.IsInfinity(duration))
             {
-                _humActive = false;
-                OnTriangleHumStop?.Invoke();
+                duration = 1f;
             }
 
-            _currentHumTarget = _humEnabledForCurrentManifestation
-                ? (float.IsNaN(definition.HumPresence) || float.IsInfinity(definition.HumPresence) ? 0f : Mathf.Clamp01(definition.HumPresence))
-                : 0f;
-
-            OnTriangleManifestation?.Invoke(definition.ManifestId);
-
-            float safeCooldown = float.IsNaN(definition.CooldownSeconds) || float.IsInfinity(definition.CooldownSeconds)
-                ? 14f
-                : Mathf.Max(0.5f, definition.CooldownSeconds);
-            _manifestCooldowns[definition.ManifestId] = safeCooldown;
-
-            _pendingDefinition = definition;
-            _pendingDuration = safeDuration;
-            _pendingSerial = manifestationSerial;
-            Invoke(nameof(ResolveManifestation), safeDuration);
+            // The duration is the one input StartManifestation does not derive itself,
+            // because the picker samples it from the definition's own window.
+            float safeDuration = Mathf.Max(0.25f, duration);
+            StartManifestationWithDuration(definition, safeDuration);
 
             TriangleLog.Dream($"Triangle manifest triggered (lucidity={(_playerLucidity != null ? _playerLucidity.GetLucidity().ToString("0.0") : "-1")}).");
         }
@@ -1006,7 +1016,7 @@ namespace Triangle.Dream
                     _maximumPointReapplied = true;
                     PushSubtitle("The dream knows you are awake.", 4f);
                     // The point stops hiding at full lucidity.
-                    _cornerPoint.Manifest(9999f);
+                    _cornerPoint.Manifest(PermanentManifestSeconds);
                     _manifestationActive = true;
                     _humEnabledForCurrentManifestation = true;
                     _currentHumTarget = Mathf.Max(_currentHumTarget, 0.65f);
@@ -1050,7 +1060,7 @@ namespace Triangle.Dream
                 RequestTransientHum(0.5f, 4f);
                 train.SetDoorsOpen(true);
                 CancelInvoke(nameof(CloseTrainDoors));
-                Invoke(nameof(CloseTrainDoors), 8f);
+                Invoke(nameof(CloseTrainDoors), TrainDoorHoldSeconds);
             }
         }
 

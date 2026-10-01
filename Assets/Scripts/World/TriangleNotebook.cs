@@ -1,7 +1,6 @@
 using Triangle.Core;
 using Triangle.Interaction;
 using Triangle.Lucidity;
-using Triangle.World;
 using UnityEngine;
 
 namespace Triangle.World
@@ -48,7 +47,8 @@ namespace Triangle.World
 
         private void HandleInteracted(TriangleInteractable interactable, GameObject interactor)
         {
-            _interactionCount = Mathf.Max(0, _interactionCount);
+            // Saturating rather than wrapping: reading the notebook a few thousand times
+            // must not roll the counter back to zero and re-grant the first page.
             if (_interactionCount < int.MaxValue)
             {
                 _interactionCount++;
@@ -71,11 +71,6 @@ namespace Triangle.World
         public void SetInteractionCount(int newInteractionCount)
         {
             _interactionCount = Mathf.Max(0, newInteractionCount);
-        }
-
-        public void ResetInteractionCount()
-        {
-            _interactionCount = 0;
         }
 
         private void ShowPage(int pageIndex)

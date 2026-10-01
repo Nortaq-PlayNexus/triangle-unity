@@ -24,6 +24,9 @@ namespace Triangle.Audio
         private const float FreqB = 46.7f;
         private const float BufferSeconds = 4f;
 
+        /// <summary>Clip name for the generated fallback bed, used to identify our own assets.</summary>
+        public const string GeneratedBedName = "TriangleDroneBed";
+
         private AudioClip _clip;
         private AudioSource _source;
 
@@ -33,11 +36,40 @@ namespace Triangle.Audio
         private double _slowLfoPhase;
 
         private float _targetPresence;
-        private float _currentEnvelope;
         private float _fadeSeconds = 1f;
+        private float _volume = 1f;
+
+        // The PCM reader callback runs on the audio thread, not the main thread, and
+        // reads the envelope while Update writes it. A plain field is not a safe
+        // cross-thread handoff: the audio thread can observe a torn or stale value and
+        // produce a discontinuity mid-buffer. Volatile gives the release semantics the
+        // handoff needs, and a float store/load is atomic on the platforms this ships
+        // to, so the read is always one of the two written values.
+        private volatile float _currentEnvelope;
 
         public float HumPresence => _currentEnvelope;
         public bool IsHumming => _source != null && _source.isPlaying;
+
+        /// <summary>
+        /// Player volume multiplier, independent of the dream bed's.
+        ///
+        /// The hum is a sustained tone around 43/47 Hz, which is exactly the register
+        /// people find uncomfortable, so it gets its own control rather than sharing one
+        /// with the music. 0 mutes it without silencing the dream.
+        /// </summary>
+        public float Volume
+        {
+            get => _volume;
+            set
+            {
+                if (float.IsNaN(value) || float.IsInfinity(value))
+                {
+                    return;
+                }
+
+                _volume = Mathf.Clamp01(value);
+            }
+        }
 
         private void Awake()
         {
@@ -67,11 +99,19 @@ namespace Triangle.Audio
                 return;
             }
 
-            float step = Mathf.Min(1f, Time.deltaTime / _fadeSeconds);
-            _currentEnvelope += (_targetPresence - _currentEnvelope) * step;
-            _currentEnvelope = Mathf.Clamp01(_currentEnvelope);
+            // Unscaled on purpose. The pause menu sets Time.timeScale to zero, and on
+            // scaled time that froze the envelope mid-fade: the hum stayed stuck at
+            // whatever level it had reached and stopped responding to presence for as
+            // long as the game was paused. Audio fades are presentation, not simulation.
+            float step = Mathf.Min(1f, Time.unscaledDeltaTime / _fadeSeconds);
+            _currentEnvelope = Mathf.Clamp01(_currentEnvelope + (_targetPresence - _currentEnvelope) * step);
 
-            if (_currentEnvelope > 0.01f)
+            // At zero volume the clip stops entirely rather than playing silently, so a
+            // player who has muted the hum is not paying for a live PCM callback that
+            // nobody can hear.
+            bool audible = _volume > 0.001f;
+
+            if (_currentEnvelope > 0.01f && audible)
             {
                 if (!_source.isPlaying)
                 {
@@ -80,7 +120,7 @@ namespace Triangle.Audio
                 }
 
                 // Perceptual curve: the square root keeps the hum from feeling linear.
-                _source.volume = Mathf.Sqrt(_currentEnvelope) * 0.55f;
+                _source.volume = Mathf.Sqrt(_currentEnvelope) * 0.55f * _volume;
             }
             else if (_source.isPlaying)
             {
@@ -92,6 +132,23 @@ namespace Triangle.Audio
         {
             const double twoPi = System.Math.PI * 2.0;
             double rate = SampleRate;
+
+            // Snapshot the envelope once per buffer rather than per sample. It is the
+            // only piece of shared state here, and hoisting the volatile read out of
+            // the inner loop also guarantees every sample in a buffer uses one value,
+            // which is what keeps the waveform free of a step at the buffer boundary.
+            double envelope = _currentEnvelope;
+            if (envelope <= 0.0001)
+            {
+                // Silence requested: emit it and do not burn the phase accumulators
+                // forward, so resuming does not jump the waveform to an arbitrary point.
+                for (int i = 0; i < data.Length; i++)
+                {
+                    data[i] = 0f;
+                }
+
+                return;
+            }
 
             for (int i = 0; i < data.Length; i++)
             {
@@ -105,7 +162,7 @@ namespace Triangle.Audio
 
                 // A beat: the two partials slow-dance in and out of phase.
                 double breath = 0.72 + 0.28 * System.Math.Sin(_slowLfoPhase);
-                double sample = (System.Math.Sin(_phaseA) + System.Math.Sin(_phaseB)) * 0.5 * breath * _currentEnvelope * 0.60;
+                double sample = (System.Math.Sin(_phaseA) + System.Math.Sin(_phaseB)) * 0.5 * breath * envelope * 0.60;
 
                 data[i] = (float)(System.Math.Max(-1.0, System.Math.Min(1.0, sample)));
             }
@@ -114,12 +171,20 @@ namespace Triangle.Audio
         /// <summary>
         /// Builds a seamless looping bed: two low sines a fifth apart under a very
         /// slow tremolo. Generated once, shared by every source that asks for it.
+        ///
+        /// Timed in development builds, because this is a few hundred thousand
+        /// <c>Math.Sin</c> calls on the main thread during the bootstrap's Start, and
+        /// the real number on the target machine is worth knowing rather than guessing.
         /// </summary>
         public static AudioClip CreateDroneBed(float seconds)
         {
             const int rate = 48000;
             int sampleCount = Mathf.Max(1, Mathf.RoundToInt(rate * seconds));
 
+            bool timed = Debug.isDebugBuild;
+            long started = timed ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+
+            AudioClip clip = AudioClip.Create(GeneratedBedName, sampleCount, 1, rate, false);
             var samples = new float[sampleCount];
             for (int i = 0; i < sampleCount; i++)
             {
@@ -131,16 +196,26 @@ namespace Triangle.Audio
                 samples[i] = (float)(body * tremolo * 0.5);
             }
 
-            // Cross-fade the tail into the head so the loop point is inaudible.
+            // Cross-fade the tail into the head so the loop point is inaudible. The
+            // tail is zeroed afterwards: without that the seam region plays twice,
+            // because the head now begins with a copy of it.
             int crossfade = Mathf.Min(sampleCount / 8, rate / 2);
             for (int i = 0; i < crossfade; i++)
             {
                 float t = i / (float)crossfade;
                 samples[i] = Mathf.Lerp(samples[sampleCount - crossfade + i], samples[i], t);
+                samples[sampleCount - crossfade + i] = 0f;
             }
 
-            AudioClip clip = AudioClip.Create("TriangleDroneBed", sampleCount, 1, rate, false);
             clip.SetData(samples, 0);
+
+            if (timed)
+            {
+                double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - started) * 1000.0
+                            / System.Diagnostics.Stopwatch.Frequency;
+                TriangleLog.Log($"Generated the {sampleCount:0} sample drone bed in {ms:0.0} ms.");
+            }
+
             return clip;
         }
 

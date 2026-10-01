@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Triangle.Core;
 using Triangle.Lucidity;
@@ -42,9 +43,16 @@ namespace Triangle.UI
         [Range(0f, 1f)] [SerializeField] private float subtitleOpacity = 1f;
         [SerializeField] private Color subtitleColor = new Color(0.92f, 0.92f, 0.96f, 1f);
 
+        [Header("Interaction prompt")]
+        [Tooltip("Shown beside the focused object's name, e.g. \"[F / X]\". Update this if the Interact binding changes.")]
+        [SerializeField] private string interactionHint = "[F / X]";
+
         [Header("Subtitles")]
         [Tooltip("Prevents an unbounded burst of events from growing memory forever.")]
         [Range(1, 32)] [SerializeField] private int maxSubtitleQueue = 16;
+
+        [Tooltip("Dark plate behind the subtitle, so reduced-opacity text stays legible against the dark bed.")]
+        [SerializeField] private bool subtitleBackdrop = false;
 
         private Canvas _canvas;
         private Text _interactionName;
@@ -54,6 +62,7 @@ namespace Triangle.UI
         private Image _recognitionBar;
         private Text _recognitionLabel;
         private Text _subtitleText;
+        private Image _subtitleBackdrop;
         private Text _pauseText;
         private Image _dreamFadeOverlay;
 
@@ -82,11 +91,21 @@ namespace Triangle.UI
         private void Awake()
         {
             BuildHud();
+
+            // Read the stored settings before anything is shown, so the very first
+            // subtitle already honours the player's subtitle size and opacity.
+            ApplyAccessibilitySettings();
+            TriangleAccessibility.OnSettingsChanged += ApplyAccessibilitySettings;
         }
 
         private void OnDestroy()
         {
             UnbindFromPlayer();
+
+            // Unhook from the static event. A HUD that outlives the domain - which a
+            // disabled-then-destroyed object can - would otherwise keep the whole
+            // settings object alive through this delegate.
+            TriangleAccessibility.OnSettingsChanged -= ApplyAccessibilitySettings;
         }
 
         // --- Construction -----------------------------------------------------------
@@ -122,14 +141,17 @@ namespace Triangle.UI
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1920f, 1080f);
             scaler.matchWidthOrHeight = 0.5f;
-            canvasObject.AddComponent<GraphicRaycaster>();
 
             if (FindObjectOfType<EventSystem>() == null)
             {
+                // The HUD is built entirely from Text and Image, neither of which handles
+                // pointer input, so no input module is needed. Adding a
+                // StandaloneInputModule would have it poll the mouse and every axis in the
+                // Input Manager every frame for no possible consumer, and would swallow
+                // nothing useful - the player reads input directly through Input.*.
                 var eventSystemObject = new GameObject("EventSystem");
                 eventSystemObject.transform.SetParent(transform, false);
                 eventSystemObject.AddComponent<EventSystem>();
-                eventSystemObject.AddComponent<StandaloneInputModule>();
             }
 
             // Full-screen transition veil. Sits first so everything else draws on top.
@@ -189,7 +211,16 @@ namespace Triangle.UI
             _recognitionBar.rectTransform.anchoredPosition = new Vector2(-40f, 34f);
             _recognitionBar.rectTransform.sizeDelta = new Vector2(320f, 8f);
 
-            // Subtitle, lower third.
+            // Subtitle, lower third. The backdrop is a sibling rather than a parent, so it
+            // cannot scale or clip with the text and the two can be shown independently.
+            _subtitleBackdrop = CreateImage("SubtitleBackdrop", canvasObject.transform, new Color(0f, 0f, 0f, 0.55f));
+            _subtitleBackdrop.rectTransform.anchorMin = new Vector2(0.5f, 0f);
+            _subtitleBackdrop.rectTransform.anchorMax = new Vector2(0.5f, 0f);
+            _subtitleBackdrop.rectTransform.pivot = new Vector2(0.5f, 0f);
+            _subtitleBackdrop.rectTransform.anchoredPosition = new Vector2(0f, 200f);
+            _subtitleBackdrop.rectTransform.sizeDelta = new Vector2(1560f, 120f);
+            _subtitleBackdrop.raycastTarget = false;
+
             _subtitleText = CreateText("Subtitle", canvasObject.transform, font, 30, TextAnchor.LowerCenter);
             _subtitleText.color = subtitleColor;
             _subtitleText.rectTransform.anchorMin = new Vector2(0.5f, 0f);
@@ -207,6 +238,18 @@ namespace Triangle.UI
             StretchFull(_pauseText.rectTransform);
             _pauseText.text = "PAUSED";
             _pauseText.gameObject.SetActive(false);
+
+            // Both awareness meters are hidden by default. They are revealed by the
+            // band-crossing handlers, and BindToPlayer re-derives their visibility for
+            // a pawn that starts or loads above the reveal threshold.
+            SetLucidityMeterVisible(false);
+            SetRecognitionMeterVisible(false);
+
+            // Added disabled rather than not added at all. The HUD currently has no
+            // interactive element, so the raycaster has nothing to test against, but
+            // authoring a pause menu later would otherwise need this plumbing rebuilt -
+            // and forgetting to re-enable it is a silent, hard-to-diagnose failure.
+            canvasObject.AddComponent<GraphicRaycaster>().enabled = false;
         }
 
         private static Image CreateImage(string name, Transform parent, Color color)
@@ -273,6 +316,14 @@ namespace Triangle.UI
 
             RefreshLucidityDisplay();
             RefreshRecognitionDisplay();
+
+            // Derive visibility from the level the pawn is already at rather than
+            // waiting for the next band crossing. Both restore paths assign the value
+            // directly and deliberately do not fire a level event, so a load into High
+            // Lucidity or Master Recognition would otherwise leave both meters hidden
+            // for the rest of the run.
+            SetLucidityMeterVisible(player.Lucidity.GetLucidityLevel() >= TriangleLucidityLevel.Medium);
+            SetRecognitionMeterVisible(player.Recognition.GetRecognitionLevel() >= TriangleRecognitionLevel.Noticing);
         }
 
         public void UnbindFromPlayer()
@@ -299,7 +350,11 @@ namespace Triangle.UI
         private void HandleLucidityLevelChanged(TriangleLucidityLevel level)
         {
             // The meter only appears once the player is noticing their own awareness.
-            SetLucidityMeterVisible(level >= TriangleLucidityLevel.Low);
+            // The previous test was "level >= Low", and Low is the zero value of the
+            // enum, so it was true for every level and the supposedly hidden meter was
+            // on screen from the first frame. Medium is the first band the design says
+            // the dream stops being accepted at.
+            SetLucidityMeterVisible(level >= TriangleLucidityLevel.Medium);
         }
 
         private void HandleRecognitionChanged(float value) => RefreshRecognitionDisplay();
@@ -317,7 +372,7 @@ namespace Triangle.UI
                 return;
             }
 
-            _lucidityBar.fillAmount = _boundPlayer.Lucidity.GetLucidity() / 100f;
+            _lucidityBar.fillAmount = _boundPlayer.Lucidity.GetLucidity() / TriangleLucidity.Max;
         }
 
         private void RefreshRecognitionDisplay()
@@ -327,7 +382,7 @@ namespace Triangle.UI
                 return;
             }
 
-            _recognitionBar.fillAmount = _boundPlayer.Recognition.GetRecognition() / 100f;
+            _recognitionBar.fillAmount = _boundPlayer.Recognition.GetRecognition() / TriangleRecognition.Max;
         }
 
         public void SetLucidityValue(float value01)
@@ -387,6 +442,23 @@ namespace Triangle.UI
             }
         }
 
+        /// <summary>
+        /// The "what to press" half of the interaction prompt.
+        ///
+        /// An authored value rather than something derived. The legacy Input Manager
+        /// exposes no public API for reading a binding's key or button name at runtime -
+        /// there is no Input.GetKeyName - and the InputManager asset is not reachable
+        /// from a player build, so the only correct-by-construction option would be to
+        /// move to the Input System package and carry a serialized action asset.
+        ///
+        /// Keeping it as a field is still a real improvement over the previous state,
+        /// where the literal "[F / X]" sat in the middle of the interaction scan: it is
+        /// now tunable, sits with the rest of the HUD's presentation, and is changed in
+        /// one place when a binding changes rather than by finding a string in a
+        /// gameplay method.
+        /// </summary>
+        public string InteractionHint => interactionHint;
+
         // --- Subtitles ------------------------------------------------------------------------
 
         /// <summary>Queues a subtitle so closely-spaced story beats are not overwritten.</summary>
@@ -433,8 +505,16 @@ namespace Triangle.UI
                 return;
             }
 
-            _subtitleText.text = text;
-            _subtitleText.gameObject.SetActive(!string.IsNullOrEmpty(text));
+            bool hasText = !string.IsNullOrEmpty(text);
+            _subtitleText.text = text ?? string.Empty;
+            _subtitleText.gameObject.SetActive(hasText);
+
+            // The plate follows the text's visibility. Left on its own it would sit as a
+            // dark rectangle in the middle of an empty screen.
+            if (_subtitleBackdrop != null)
+            {
+                _subtitleBackdrop.gameObject.SetActive(hasText && subtitleBackdrop);
+            }
         }
 
         public void SetSubtitleScale(float scale)
@@ -460,6 +540,36 @@ namespace Triangle.UI
             Color color = subtitleColor;
             color.a = subtitleOpacity;
             _subtitleText.color = color;
+
+            // The plate tracks the text's alpha so reducing opacity dims both together
+            // rather than leaving a fully opaque box behind nearly invisible text.
+            if (_subtitleBackdrop != null)
+            {
+                Color plate = _subtitleBackdrop.color;
+                plate.a = 0.55f * subtitleOpacity;
+                _subtitleBackdrop.color = plate;
+                _subtitleBackdrop.gameObject.SetActive(subtitleBackdrop && _subtitleText.gameObject.activeSelf);
+            }
+        }
+
+        /// <summary>
+        /// Pulls the current accessibility settings into the HUD's presentation state.
+        ///
+        /// Subscribed to the settings change event, so an adjustment made in the pause
+        /// menu is visible immediately rather than on the next dream.
+        /// </summary>
+        private void ApplyAccessibilitySettings()
+        {
+            subtitleScale = TriangleAccessibility.SubtitleScale;
+            subtitleOpacity = TriangleAccessibility.SubtitleOpacity;
+            subtitleBackdrop = TriangleAccessibility.SubtitleBackdrop;
+            ApplySubtitleAppearance();
+        }
+
+        public void SetSubtitleBackdrop(bool enabled)
+        {
+            subtitleBackdrop = enabled;
+            ApplySubtitleAppearance();
         }
 
         // --- Dream transition veil ------------------------------------------------------------
@@ -508,12 +618,40 @@ namespace Triangle.UI
 
         // --- Pause --------------------------------------------------------------------------------
 
-        public void SetPauseVisible(bool visible)
+        /// <summary>
+        /// The HUD is the single owner of the pause state.
+        ///
+        /// Pause used to be a boolean on this class while the pawn separately assigned
+        /// <c>Time.timeScale</c> and the cursor, with the player reading the boolean
+        /// back to decide what to toggle. Any other system touching the timescale
+        /// desynchronised the two and the next Escape did the opposite of what was
+        /// asked. One method owns all three now.
+        /// </summary>
+        public void TogglePause()
         {
-            IsPaused = visible;
+            SetPaused(!IsPaused);
+        }
+
+        public void SetPaused(bool paused)
+        {
+            IsPaused = paused;
+            Time.timeScale = paused ? 0f : 1f;
+            Cursor.lockState = paused ? CursorLockMode.None : CursorLockMode.Locked;
+            Cursor.visible = paused;
+
             if (_pauseText != null)
             {
-                _pauseText.gameObject.SetActive(visible);
+                _pauseText.gameObject.SetActive(paused);
+            }
+        }
+
+        private void OnDisable()
+        {
+            // Leaving play mode, or disabling the HUD, must not leave the game frozen.
+            if (IsPaused)
+            {
+                Time.timeScale = 1f;
+                IsPaused = false;
             }
         }
 
@@ -521,18 +659,25 @@ namespace Triangle.UI
 
         private void Update()
         {
-            float deltaSeconds = Time.deltaTime;
+            // Subtitles read as presentation, so they ride scaled time and hold still
+            // while the game is paused. The transition veil must not: it is a
+            // screen-covering effect with a hard midpoint, and driving it on scaled
+            // time means any pause landing inside the window leaves the player looking
+            // at an opaque black screen with no way to tell that is a pause rather than
+            // a hung game. Presentation, not simulation, gets unscaled time.
+            float scaledDelta = Time.deltaTime;
+            float unscaledDelta = Time.unscaledDeltaTime;
 
             if (_subtitleActive)
             {
-                _subtitleRemaining -= deltaSeconds;
+                _subtitleRemaining -= scaledDelta;
                 if (_subtitleRemaining <= 0f)
                 {
                     ShowNextSubtitle();
                 }
             }
 
-            AdvanceDreamTransition(deltaSeconds);
+            AdvanceDreamTransition(unscaledDelta);
         }
 
         private void AdvanceDreamTransition(float deltaSeconds)

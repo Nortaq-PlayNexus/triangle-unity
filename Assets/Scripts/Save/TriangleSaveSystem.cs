@@ -25,18 +25,11 @@ namespace Triangle.Save
 
         private const int MaxSerializedEntries = 256;
 
-        private readonly MonoBehaviour _host;
-
         private TriangleSaveData _pendingSnapshot;
         private TriangleDreamEnvironment _pendingEnvironment = TriangleDreamEnvironment.ChildhoodBedroom;
 
         /// <summary>Completion callback for callers; fired on every save attempt.</summary>
         public Action<bool> OnSaveCompleted;
-
-        public TriangleSaveSystem(MonoBehaviour host)
-        {
-            _host = host;
-        }
 
         private static string SlotPath => Path.Combine(Application.persistentDataPath, SaveSlotName + ".json");
 
@@ -52,12 +45,14 @@ namespace Triangle.Save
             if (!HasSaveData())
             {
                 TriangleLog.Save($"Save slot '{SaveSlotName}' is already clear.");
+                DiscardStagingFiles();
                 return true;
             }
 
             try
             {
                 File.Delete(SlotPath);
+                DiscardStagingFiles();
                 TriangleLog.Save($"Deleted save slot '{SaveSlotName}'.");
                 return true;
             }
@@ -68,35 +63,97 @@ namespace Triangle.Save
             }
         }
 
+        /// <summary>
+        /// Removes the staging file and the retained backup.
+        ///
+        /// DeleteSaveData is what the slice calls to start a fresh dream, so it has to
+        /// clear the backup too. Leaving it behind would mean the very next load falls
+        /// back to a stale dream the player believed they had erased.
+        /// </summary>
+        private static void DiscardStagingFiles()
+        {
+            foreach (string path in new[] { SlotPath + ".tmp", SlotPath + ".bak" })
+            {
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+                }
+                catch (Exception)
+                {
+                    // Litter in the save directory is not worth failing a delete over.
+                }
+            }
+        }
+
         public bool HasSaveData() => File.Exists(SlotPath);
 
-        /// <summary>Loads the saved dream from disk. Null when none exists.</summary>
+        /// <summary>True when a retained backup of the previous save exists.</summary>
+        public bool HasBackup => File.Exists(SlotPath + ".bak");
+
+        /// <summary>
+        /// Loads the saved dream from disk. Null when none exists.
+        ///
+        /// Falls back to the retained backup when the primary slot is unreadable, so a
+        /// damaged save costs the player the most recent write rather than everything.
+        /// </summary>
         public TriangleSaveData LoadNow()
         {
             if (!HasSaveData())
             {
                 TriangleLog.SaveWarn($"No save data found in slot '{SaveSlotName}'.");
-                return null;
+                return LoadFromBackup();
             }
 
-            TriangleSaveData loaded;
-            try
-            {
-                string json = File.ReadAllText(SlotPath);
-                loaded = JsonUtility.FromJson<TriangleSaveData>(json);
-            }
-            catch (Exception e)
-            {
-                TriangleLog.SaveWarn($"Failed to read save slot '{SaveSlotName}': {e.Message}");
-                return null;
-            }
+            TriangleSaveData loaded = ReadSlot(SlotPath);
 
             if (loaded == null)
             {
-                TriangleLog.SaveWarn($"Save slot '{SaveSlotName}' contained unreadable data.");
+                TriangleLog.SaveWarn($"Save slot '{SaveSlotName}' could not be read; trying the backup.");
+                TriangleSaveData recovered = LoadFromBackup();
+                if (recovered != null)
+                {
+                    TriangleLog.Save($"Recovered the dream from the backup of slot '{SaveSlotName}'.");
+                }
+
+                return recovered;
+            }
+
+            return FinishLoad(loaded, "slot");
+        }
+
+        /// <summary>Reads and deserialises one file, or null if it is unusable.</summary>
+        private static TriangleSaveData ReadSlot(string path)
+        {
+            try
+            {
+                string json = File.ReadAllText(path);
+                return JsonUtility.FromJson<TriangleSaveData>(json);
+            }
+            catch (Exception e)
+            {
+                TriangleLog.SaveWarn($"Failed to read '{Path.GetFileName(path)}': {e.Message}");
+                return null;
+            }
+        }
+
+        private TriangleSaveData LoadFromBackup()
+        {
+            string backup = SlotPath + ".bak";
+            if (!File.Exists(backup))
+            {
                 return null;
             }
 
+            TriangleSaveData recovered = ReadSlot(backup);
+            return recovered == null ? null : FinishLoad(recovered, "backup");
+        }
+
+        /// <summary>Validates, sanitises and migrates a freshly deserialised snapshot.</summary>
+        private TriangleSaveData FinishLoad(TriangleSaveData loaded, string source)
+        {
             // Bound collection sizes before they reach gameplay code. Save files are
             // local, but malformed or hand-edited data should not create unbounded work.
             loaded.RecognizedPatternIds = BoundList(loaded.RecognizedPatternIds);
@@ -122,6 +179,18 @@ namespace Triangle.Save
                 return null;
             }
 
+            // A current-schema save without the marker did not come from this game, or
+            // was written badly enough to lose it. Either way its contents cannot be
+            // trusted, and a default-constructed object passes every remaining check.
+            if (loaded.SchemaVersion >= TriangleSaveData.CurrentSchemaVersion &&
+                loaded.Signature != TriangleSaveData.ExpectedSignature)
+            {
+                TriangleLog.SaveWarn(
+                    $"Save '{SaveSlotName}' claims schema {loaded.SchemaVersion} but carries no valid format marker; " +
+                    "refusing to read it rather than silently restoring a blank dream.");
+                return null;
+            }
+
             if (loaded.SchemaVersion <= 0)
             {
                 if (loaded.RecognizedPatternIds.Count == 0 && loaded.TriangleEncounters > 0)
@@ -133,7 +202,7 @@ namespace Triangle.Save
 
                 loaded.HasPlayerTransformInEnvironment = false;
                 loaded.SchemaVersion = TriangleSaveData.CurrentSchemaVersion;
-                TriangleLog.Save($"Migrated legacy pre-versioned save from slot '{SaveSlotName}'.");
+                TriangleLog.Save($"Migrated legacy pre-versioned {source} from slot '{SaveSlotName}'.");
             }
             else if (loaded.SchemaVersion == 1)
             {
@@ -142,11 +211,21 @@ namespace Triangle.Save
                 // builder start rather than interpreting it in the wrong world.
                 loaded.HasPlayerTransformInEnvironment = false;
                 loaded.SchemaVersion = TriangleSaveData.CurrentSchemaVersion;
-                TriangleLog.Save($"Migrated schema 1 save from slot '{SaveSlotName}' to environment-relative transform support.");
+                TriangleLog.Save($"Migrated schema 1 {source} from slot '{SaveSlotName}' to environment-relative transform support.");
+            }
+
+            // Stamp the marker onto anything that just migrated forward, so the next
+            // load passes the signature check above instead of looking pre-signature
+            // for a second time.
+            if (Name.IsNone(loaded.Signature))
+            {
+                loaded.Signature = TriangleSaveData.ExpectedSignature;
             }
 
             TriangleLog.Save(
-                $"Loaded save (schema={loaded.SchemaVersion}, lucidity={loaded.Lucidity:0.0}, patterns={loaded.RecognizedPatternIds.Count}, environment={loaded.CurrentEnvironmentId}, wake-layer={loaded.FalseAwakeningLayer}, door-open={loaded.BedroomDoorOpen}).");
+                $"Loaded {source} (schema={loaded.SchemaVersion}, lucidity={loaded.Lucidity:0.0}, " +
+                $"patterns={loaded.RecognizedPatternIds.Count}, environment={loaded.CurrentEnvironmentId}, " +
+                $"wake-layer={loaded.FalseAwakeningLayer}, door-open={loaded.BedroomDoorOpen}).");
             return loaded;
         }
 
@@ -178,11 +257,18 @@ namespace Triangle.Save
                 snapshot.SchemaVersion = TriangleSaveData.CurrentSchemaVersion;
             }
 
+            // Stamp the signature so a later load can tell a real save apart from a
+            // same-shaped file that happens to parse. See TriangleSaveData.Signature.
+            if (Name.IsNone(snapshot.Signature))
+            {
+                snapshot.Signature = TriangleSaveData.ExpectedSignature;
+            }
+
             bool success;
             try
             {
                 string json = JsonUtility.ToJson(snapshot, true);
-                File.WriteAllText(SlotPath, json);
+                WriteAtomically(json);
                 success = true;
             }
             catch (Exception e)
@@ -194,6 +280,82 @@ namespace Triangle.Save
             TriangleLog.Save($"Save {(success ? "succeeded" : "FAILED")} (schema={snapshot.SchemaVersion}, lucidity={snapshot.Lucidity:0.0}).");
             OnSaveCompleted?.Invoke(success);
             return success;
+        }
+
+        /// <summary>
+        /// Writes through a temp file, keeps the previous save as a backup, then swaps
+        /// the new one into place.
+        ///
+        /// A direct WriteAllText truncates the slot before it writes. Anything that
+        /// interrupted the process mid-write - a crash, a forced quit, a full disk -
+        /// left a truncated file that then failed to parse on the next load, silently
+        /// destroying the player's progress. The swap makes the slot either the old
+        /// save or the new one, never a fragment.
+        ///
+        /// The previous good save is retained alongside as a backup. That covers the
+        /// case the atomic swap cannot: a write that succeeds cleanly but contains the
+        /// wrong thing, because of a bug rather than an interruption. With a backup on
+        /// disk the player is never more than one bad write away from total loss.
+        /// </summary>
+        private static void WriteAtomically(string json)
+        {
+            string target = SlotPath;
+            string staging = target + ".tmp";
+            string backup = target + ".bak";
+
+            File.WriteAllText(staging, json);
+
+            if (File.Exists(target))
+            {
+                PreserveBackup(target, backup);
+
+                // Replace keeps the destination's identity and is atomic where the
+                // platform supports it; delete+move is the portable fallback.
+                try
+                {
+                    File.Replace(staging, target, null);
+                    return;
+                }
+                catch (PlatformNotSupportedException)
+                {
+                    File.Delete(target);
+                }
+                catch (IOException)
+                {
+                    // Some filesystems refuse Replace on a plain file. Fall through.
+                }
+
+                File.Move(staging, target);
+                return;
+            }
+
+            File.Move(staging, target);
+        }
+
+        /// <summary>
+        /// Copies the outgoing save aside before it is overwritten.
+        ///
+        /// Best effort by design. A failed backup must not stop the new save from being
+        /// written, because refusing to save is the worse outcome.
+        /// </summary>
+        private static void PreserveBackup(string target, string backup)
+        {
+            try
+            {
+                if (!File.Exists(backup))
+                {
+                    File.Copy(target, backup);
+                    return;
+                }
+
+                // Overwrite in place rather than delete-then-copy, so there is no window
+                // in which neither copy exists.
+                File.Copy(target, backup, overwrite: true);
+            }
+            catch (Exception e)
+            {
+                TriangleLog.SaveWarn($"Could not refresh the save backup: {e.Message}");
+            }
         }
 
         /// <summary>
@@ -403,20 +565,32 @@ namespace Triangle.Save
                 return null;
             }
 
-            foreach (TriangleRoomBuilder room in UnityEngine.Object.FindObjectsOfType<TriangleRoomBuilder>())
+            // Ask the flow which builder is live rather than searching the scene. A
+            // scene search can see the outgoing environment's builder, because
+            // Object.Destroy is deferred to the end of the frame, and the bedroom
+            // builder was always tested first - so a save taken on the frame the swap
+            // completed could be resolved against the wrong room.
+            return FlowStart(flow.ActiveEnvironment);
+        }
+
+        /// <summary>The generated DreamStart inside a builder, if it produced one.</summary>
+        private static Transform FlowStart(GameObject builder)
+        {
+            if (builder == null)
             {
-                if (room.DreamStart != null)
-                {
-                    return room.DreamStart;
-                }
+                return null;
             }
 
-            foreach (TriangleStationBuilder station in UnityEngine.Object.FindObjectsOfType<TriangleStationBuilder>())
+            TriangleRoomBuilder room = builder.GetComponent<TriangleRoomBuilder>();
+            if (room != null && room.DreamStart != null)
             {
-                if (station.DreamStart != null)
-                {
-                    return station.DreamStart;
-                }
+                return room.DreamStart;
+            }
+
+            TriangleStationBuilder station = builder.GetComponent<TriangleStationBuilder>();
+            if (station != null && station.DreamStart != null)
+            {
+                return station.DreamStart;
             }
 
             return null;
@@ -476,13 +650,16 @@ namespace Triangle.Save
             if (door != null)
             {
                 save.BedroomDoorOpen = door.IsOpen;
-                TriangleRuntime.GameFlow?.SetLastBedroomDoorOpen(save.BedroomDoorOpen);
             }
             else if (TriangleRuntime.GameFlow != null)
             {
                 save.BedroomDoorOpen = TriangleRuntime.GameFlow.LastBedroomDoorOpen;
             }
 
+            // Note: building a snapshot is a pure read of the world. It deliberately
+            // does not write anything back into the flow. The previous version pushed
+            // the observed door state back into TriangleGameFlow, so merely pressing
+            // F5 mutated the live game.
             save.SetEnvironmentFlag("BedroomDoorOpen", save.BedroomDoorOpen);
             return save;
         }
@@ -491,6 +668,8 @@ namespace Triangle.Save
         {
             // The flow object is authoritative when procedural environment swapping
             // is available. Builder checks keep snapshots useful in simpler worlds.
+            // The ids come from TriangleGameFlow rather than string literals, which had
+            // already drifted once and would silently fail the known-id check.
             TriangleGameFlow flow = TriangleRuntime.GameFlow;
             if (flow != null && flow.HasActiveEnvironment)
             {
@@ -499,12 +678,12 @@ namespace Triangle.Save
 
             if (UnityEngine.Object.FindObjectOfType<TriangleRoomBuilder>() != null)
             {
-                return "ChildhoodBedroom";
+                return TriangleGameFlow.IdFor(TriangleDreamEnvironment.ChildhoodBedroom);
             }
 
             if (UnityEngine.Object.FindObjectOfType<TriangleStationBuilder>() != null)
             {
-                return "UndergroundStation";
+                return TriangleGameFlow.IdFor(TriangleDreamEnvironment.UndergroundStation);
             }
 
             return string.Empty;

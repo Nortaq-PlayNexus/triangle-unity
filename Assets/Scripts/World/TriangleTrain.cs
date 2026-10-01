@@ -1,6 +1,5 @@
 using Triangle.Core;
 using Triangle.Interaction;
-using Triangle.World;
 using UnityEngine;
 
 namespace Triangle.World
@@ -34,29 +33,38 @@ namespace Triangle.World
         private void Awake()
         {
             // Body: a long, low box. The wrong proportions - too tall, too boxy.
+            // Centred on the origin, so the body spans x -2..2, y -0.5..1.3, z -0.55..0.55.
+            const float bodyTop = 1.3f;
             GameObject body = TriangleShapes.CreateShape("Body", TriangleShapes.Cube, transform);
             body.transform.localScale = Cm.Scale(4f, 1.8f, 1.1f);
             body.transform.localPosition = new Vector3(0f, 0.4f, 0f);
             body.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(BodyColor);
             body.AddComponent<BoxCollider>().size = Vector3.one;
 
-            // Doors: thin panels just proud of the body sides.
-            _doorL = BuildPanel("DoorL", Cm.Scale(1.6f, 0.06f, 1.4f), new Vector3(1.65f, 0.93f, 0.4f), DoorColor, out _doorColliderL);
-            _doorR = BuildPanel("DoorR", Cm.Scale(1.6f, 0.06f, 1.4f), new Vector3(-1.65f, -0.93f, 0.4f), DoorColor, out _doorColliderR);
+            // Doors: thin panels on the +Z face, one toward each end. The previous
+            // values put _doorR at y = -0.93, which is below the body's underside
+            // (-0.5) - it was hanging under the carriage, not on its side - and put
+            // both panels half-buried inside the body box.
+            float doorY = bodyTop - 0.37f;
+            float doorZ = 0.55f + 0.03f; // just proud of the body face
+            _doorL = BuildPanel("DoorL", Cm.Scale(0.9f, 0.06f, 1.4f), new Vector3(1.1f, doorY, doorZ), DoorColor, out _doorColliderL);
+            _doorR = BuildPanel("DoorR", Cm.Scale(0.9f, 0.06f, 1.4f), new Vector3(-1.1f, doorY, doorZ), DoorColor, out _doorColliderR);
 
-            // Windows: a continuous dark strip just proud of the side.
-            GameObject window = BuildPanel("Window", Cm.Scale(2.4f, 0.04f, 0.6f), new Vector3(0f, 0.93f, 0.6f), WindowColor, out _).gameObject;
+            // Windows: a continuous dark strip just proud of the same face.
+            GameObject window = BuildPanel("Window", Cm.Scale(2.4f, 0.04f, 0.6f), new Vector3(0f, doorY, doorZ), WindowColor, out _).gameObject;
             window.GetComponent<MeshRenderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
 
             // The body is a solid box, so a black inset supplies the visual depth of an
-            // open carriage without requiring a bespoke train mesh.
-            _aperture = BuildPanel("InteriorAperture", Cm.Scale(1.6f, 0.02f, 1.4f), new Vector3(1.65f, 0.915f, 0.4f), ApertureColor, out _);
+            // open carriage without requiring a bespoke train mesh. It sits in the same
+            // plane as the doors so removing them genuinely reveals something.
+            _aperture = BuildPanel("InteriorAperture", Cm.Scale(1.9f, 0.02f, 1.4f), new Vector3(0f, doorY, doorZ + 0.01f), ApertureColor, out _);
             _aperture.gameObject.SetActive(false);
 
-            // Interior light - a sickly cold glow that never quite illuminates.
+            // Interior light. It has to sit outboard of the body face: inside a closed
+            // opaque box it is fully enclosed, so it contributed nothing at all.
             var lightObject = new GameObject("InteriorLight");
             lightObject.transform.SetParent(transform, false);
-            lightObject.transform.localPosition = new Vector3(1.65f, 1.05f, 0.45f);
+            lightObject.transform.localPosition = new Vector3(0f, doorY, doorZ + 0.35f);
             _interiorLight = lightObject.AddComponent<Light>();
             _interiorLight.type = LightType.Point;
             _interiorLight.intensity = 6f;

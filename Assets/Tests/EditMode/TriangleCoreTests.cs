@@ -192,6 +192,94 @@ namespace Triangle.Tests
             Assert.AreEqual(-1f, facing.z, 0.001f);
         }
 
+        /// <summary>
+        /// Regression: a 90 degree pitch has to survive the basis conversion.
+        ///
+        /// The rotator used to be turned into a forward vector and handed to
+        /// Quaternion.LookRotation with Vector3.up. At the poles the forward vector is
+        /// parallel to the up vector, Unity falls back to identity, and the requested
+        /// pitch was silently discarded - so every anomaly part the builder rotates by
+        /// 90 degrees came out unrotated. float cos(90) is about 6e-17 rather than
+        /// exactly zero, which is precisely what made the degenerate case slip through
+        /// unnoticed instead of being obvious.
+        /// </summary>
+        [Test]
+        public void RotationPreservesNinetyDegreePitch()
+        {
+            Vector3 pitched = Cm.Rot(90f, 0f) * Vector3.forward;
+            Assert.AreEqual(0f, pitched.x, 0.001f);
+            Assert.AreEqual(1f, pitched.y, 0.001f, "A 90 degree pitch should point the forward axis at world up.");
+            Assert.AreEqual(0f, pitched.z, 0.001f);
+
+            Vector3 pitchedDown = Cm.Rot(-90f, 0f) * Vector3.forward;
+            Assert.AreEqual(-1f, pitchedDown.y, 0.001f, "A -90 degree pitch should point the forward axis at world down.");
+
+            // Pitched to vertical, the forward axis is straight up and yaw cannot move
+            // it any further - that is correct, not a bug. What must still work at the
+            // pole is the rest of the basis: yaw has to survive in the right axis, which
+            // is what the old identity fallback destroyed.
+            Quaternion pitchedAndYawed = Cm.Rot(90f, 45f);
+            Vector3 poleForward = pitchedAndYawed * Vector3.forward;
+            Assert.AreEqual(1f, poleForward.y, 0.001f, "Forward should stay vertical at the pitch pole.");
+
+            Vector3 poleRight = pitchedAndYawed * Vector3.right;
+            Assert.AreEqual(0.7071f, poleRight.x, 0.01f, "Yaw should still rotate the right axis at the pole.");
+            Assert.AreEqual(0f, poleRight.y, 0.01f);
+            Assert.AreEqual(-0.7071f, poleRight.z, 0.01f);
+        }
+
+        /// <summary>
+        /// Roll is a real input, not decoration.
+        ///
+        /// The parameter was accepted and then dropped on the floor, so any caller
+        /// passing a roll got a rotation with no roll in it.
+        /// </summary>
+        [Test]
+        public void RotationAppliesRollAboutTheForwardAxis()
+        {
+            // Rolling 90 degrees about forward (0, 0, 1) carries the right axis onto
+            // world up, and the up axis onto world -X.
+            Quaternion rolled = Cm.Rot(0f, 0f, 90f);
+            Assert.AreEqual(1f, (rolled * Vector3.forward).z, 0.001f, "Roll must not disturb the forward axis.");
+
+            Vector3 right = rolled * Vector3.right;
+            Assert.AreEqual(0f, right.x, 0.001f);
+            Assert.AreEqual(1f, right.y, 0.001f, "A 90 degree roll should swing the right axis onto world up.");
+            Assert.AreEqual(0f, right.z, 0.001f);
+        }
+
+        [Test]
+        public void RotationRejectsNonFiniteAnglesInsteadOfProducingGarbage()
+        {
+            Vector3 forward = Cm.Rot(float.NaN, float.PositiveInfinity, float.NaN) * Vector3.forward;
+            Assert.AreEqual(0f, forward.x, 0.001f);
+            Assert.AreEqual(0f, forward.y, 0.001f);
+            Assert.AreEqual(1f, forward.z, 0.001f, "A non-finite rotator should degrade to identity, not to noise.");
+        }
+
+        [Test]
+        public void RotationProducesAnOrthonormalBasis()
+        {
+            foreach (float pitch in new[] { -90f, -45f, 0f, 45f, 90f })
+            {
+                foreach (float yaw in new[] { 0f, 33f, 90f, 217f })
+                {
+                    Quaternion rotation = Cm.Rot(pitch, yaw, 25f);
+                    Vector3 right = rotation * Vector3.right;
+                    Vector3 up = rotation * Vector3.up;
+                    Vector3 forward = rotation * Vector3.forward;
+
+                    Assert.AreEqual(1f, right.magnitude, 0.001f, $"right axis not unit at {pitch}/{yaw}");
+                    Assert.AreEqual(1f, up.magnitude, 0.001f, $"up axis not unit at {pitch}/{yaw}");
+                    Assert.AreEqual(1f, forward.magnitude, 0.001f, $"forward axis not unit at {pitch}/{yaw}");
+
+                    Assert.AreEqual(0f, Vector3.Dot(right, up), 0.001f, $"right/up not orthogonal at {pitch}/{yaw}");
+                    Assert.AreEqual(0f, Vector3.Dot(right, forward), 0.001f, $"right/forward not orthogonal at {pitch}/{yaw}");
+                    Assert.AreEqual(0f, Vector3.Dot(up, forward), 0.001f, $"up/forward not orthogonal at {pitch}/{yaw}");
+                }
+            }
+        }
+
         // --- Motif scheduling ---------------------------------------------------
 
         [Test]

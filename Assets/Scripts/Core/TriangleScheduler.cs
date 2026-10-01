@@ -17,6 +17,14 @@ namespace Triangle.Core
     /// replaces the pending callback rather than queueing a second one, which mirrors
     /// Unreal's "clear this timer, then set it again" idiom and is what the door
     /// transition, the wake difference line and the manifestation resolver all rely on.
+    ///
+    /// Timing is unscaled by default. Everything scheduled through here is dream flow
+    /// rather than simulation - a fade-and-swap, a subtitle beat, the half-second gap
+    /// before a wrongness arrives - and the pause menu sets <c>Time.timeScale</c> to
+    /// zero. On scaled time that froze every pending callback for as long as the game
+    /// was paused, so a wake's difference line would stall mid-sentence and a queued
+    /// load would sit unresolved behind a pause screen. Callers that genuinely want
+    /// simulation time opt in per entry.
     /// </summary>
     [DisallowMultipleComponent]
     public class TriangleScheduler : MonoBehaviour
@@ -25,6 +33,7 @@ namespace Triangle.Core
         {
             public float Remaining;
             public Action Callback;
+            public bool Scaled;
         }
 
         private readonly Dictionary<string, Pending> _pending = new Dictionary<string, Pending>();
@@ -34,11 +43,24 @@ namespace Triangle.Core
         public int PendingCount => _pending.Count;
 
         /// <summary>
-        /// Schedules <paramref name="callback"/> to run after
-        /// <paramref name="delaySeconds"/>. An existing entry under the same key is
-        /// replaced.
+        /// Schedules <paramref name="callback"/> to run after <paramref name="delaySeconds"/>
+        /// of unscaled time. An existing entry under the same key is replaced.
         /// </summary>
         public void Schedule(string key, float delaySeconds, Action callback)
+        {
+            Schedule(key, delaySeconds, callback, scaled: false);
+        }
+
+        /// <summary>
+        /// Schedules <paramref name="callback"/>, choosing explicitly whether the delay
+        /// is measured in scaled or unscaled time.
+        /// </summary>
+        /// <param name="scaled">
+        /// True to have the delay respect <c>Time.timeScale</c>, so pausing holds the
+        /// callback. Only correct for work that is part of the simulation; story beats
+        /// and transitions want the default unscaled behaviour.
+        /// </param>
+        public void Schedule(string key, float delaySeconds, Action callback, bool scaled)
         {
             if (string.IsNullOrEmpty(key) || callback == null)
             {
@@ -50,7 +72,12 @@ namespace Triangle.Core
                 delaySeconds = 0f;
             }
 
-            _pending[key] = new Pending { Remaining = Mathf.Max(0f, delaySeconds), Callback = callback };
+            _pending[key] = new Pending
+            {
+                Remaining = Mathf.Max(0f, delaySeconds),
+                Callback = callback,
+                Scaled = scaled
+            };
         }
 
         /// <summary>Cancels a pending callback. Safe to call for a key that is not set.</summary>
@@ -74,7 +101,8 @@ namespace Triangle.Core
                 return;
             }
 
-            float deltaSeconds = Time.deltaTime;
+            float unscaledDelta = Time.unscaledDeltaTime;
+            float scaledDelta = Time.deltaTime;
 
             // Snapshot the keys first. Writing back to the dictionary while
             // enumerating it throws, and a callback firing mid-sweep would add or
@@ -93,7 +121,7 @@ namespace Triangle.Core
                     continue; // cancelled by an earlier callback this frame
                 }
 
-                float remaining = entry.Remaining - deltaSeconds;
+                float remaining = entry.Remaining - (entry.Scaled ? scaledDelta : unscaledDelta);
                 if (remaining <= 0f)
                 {
                     _pending.Remove(key);

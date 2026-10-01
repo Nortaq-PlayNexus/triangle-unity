@@ -1,4 +1,3 @@
-using System;
 using System.IO;
 using System.Linq;
 using UnityEditor;
@@ -31,12 +30,25 @@ namespace Triangle.EditorTools
 
             var options = new BuildPlayerOptions
             {
-                scenes = new[] { "Assets/Scenes/Dream.unity" },
+                // Take the scene list from the build settings, which the scene builder
+                // maintains, rather than repeating the path here and letting the two
+                // drift apart.
+                scenes = EditorBuildSettings.scenes
+                    .Where(scene => scene.enabled)
+                    .Select(scene => scene.path)
+                    .ToArray(),
                 locationPathName = outputPath,
                 target = BuildTarget.StandaloneWindows64,
                 targetGroup = BuildTargetGroup.Standalone,
                 options = BuildOptions.Development
             };
+
+            if (options.scenes.Length == 0)
+            {
+                Debug.LogError("[TriangleBuild] No enabled scenes in Build Settings. Run Triangle > Rebuild Playable Scene first.");
+                ExitBatchMode(1);
+                return;
+            }
 
             Debug.Log($"[TriangleBuild] Starting Windows build -> {outputPath}");
             BuildReport report = BuildPipeline.BuildPlayer(options);
@@ -59,7 +71,7 @@ namespace Triangle.EditorTools
                     }
                 }
 
-                EditorApplication.Exit(1);
+                ExitBatchMode(1);
                 return;
             }
 
@@ -68,7 +80,23 @@ namespace Triangle.EditorTools
                 $"{summary.totalWarnings} warnings, {summary.totalErrors} errors, " +
                 $"{summary.totalTime.TotalSeconds:0.0}s -> {outputPath}");
 
-            EditorApplication.Exit(0);
+            ExitBatchMode(0);
+        }
+
+        /// <summary>
+        /// Closes the editor with a status code, but only when running headless.
+        ///
+        /// This was called unconditionally on success, so building from the
+        /// <c>Triangle/Build Windows Player</c> menu item quit the whole editor out from
+        /// under the user. A batchmode invocation still needs the exit code, because
+        /// that is how CI reads the result.
+        /// </summary>
+        private static void ExitBatchMode(int exitCode)
+        {
+            if (Application.isBatchMode)
+            {
+                EditorApplication.Exit(exitCode);
+            }
         }
     }
 }

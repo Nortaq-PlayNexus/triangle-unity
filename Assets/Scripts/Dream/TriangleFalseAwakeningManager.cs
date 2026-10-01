@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using Triangle.Core;
 using Triangle.Player;
 using UnityEngine;
@@ -14,9 +13,21 @@ namespace Triangle.Dream
     /// </summary>
     public class TriangleFalseAwakeningManager
     {
+        /// <summary>
+        /// Deeper than this the dream simply declines to let go again. A high cap on
+        /// purpose: the layer count is a narrative counter, not a progression gate the
+        /// player should be able to grind.
+        /// </summary>
         private const int MaxLayer = 32;
+
         private const float WakeCooldownSeconds = 4f;
+
+        /// <summary>
+        /// The gap between "You wake up" and the first wrongness. Unscaled, so pausing
+        /// cannot freeze the beat on the "You wake up" frame.
+        /// </summary>
         private const float DifferenceDelaySeconds = 2.2f;
+
         private const float RecognitionRequiredToWake = 75f;
 
         private const string KeyResolveDifference = "TriangleWake.ResolveDifference";
@@ -39,7 +50,12 @@ namespace Triangle.Dream
         private int _completionCount;
         private float _nextWakeAllowedTime;
 
-        /// <summary>Number of completed false awakenings.</summary>
+        /// <summary>
+        /// Total false awakenings completed. Always equal to the current layer, since
+        /// every completed wake advances the layer by one and nothing else moves either
+        /// counter. Kept as its own field so the save format can carry an explicit
+        /// completion total if a future chapter ever decouples the two.
+        /// </summary>
         public int CompletionCount => _completionCount;
 
         /// <summary>Index of the layer the player is currently inside.</summary>
@@ -62,7 +78,10 @@ namespace Triangle.Dream
 
         public bool TryWake()
         {
-            if (Time.time < _nextWakeAllowedTime)
+            // Unscaled, matching the scheduler. On scaled time the pause menu could be
+            // used to shorten the cooldown's real-world duration, because pausing stops
+            // Time.time advancing while the player keeps mashing the wake key.
+            if (Time.unscaledTime < _nextWakeAllowedTime)
             {
                 return false;
             }
@@ -111,7 +130,7 @@ namespace Triangle.Dream
             }
 
             _completionCount++;
-            _nextWakeAllowedTime = Time.time + WakeCooldownSeconds;
+            _nextWakeAllowedTime = Time.unscaledTime + WakeCooldownSeconds;
 
             // The release: the dream withdraws, gets its breath back, and starts again.
             OnWakeResetRequested?.Invoke();

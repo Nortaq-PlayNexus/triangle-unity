@@ -65,11 +65,6 @@ namespace Triangle.Dream
             SetPointVisible(false);
         }
 
-        private void Start()
-        {
-            SetPointVisible(_pointVisible);
-        }
-
         /// <summary>Shows the point for the given duration, then hides it again.</summary>
         public void Manifest(float duration)
         {
@@ -77,10 +72,17 @@ namespace Triangle.Dream
             TriangleLog.DreamVerbose($"Triangle point '{ManifestId}' manifesting for {duration:0.0}s.");
 
             CancelInvoke(nameof(Hide));
-            if (duration > 0f && float.IsNaN(duration) == false)
+
+            // A finite, positive duration arms the self-hide. Anything else - zero, a
+            // negative, NaN or infinity - means "stay up until told otherwise". Infinity
+            // used to pass the positive test and reach Invoke, where it either errored
+            // or produced a hide that could never fire.
+            if (float.IsNaN(duration) || float.IsInfinity(duration) || duration <= 0f)
             {
-                Invoke(nameof(Hide), Mathf.Max(0.05f, duration));
+                return;
             }
+
+            Invoke(nameof(Hide), Mathf.Max(0.05f, duration));
         }
 
         public void Hide()
@@ -93,7 +95,13 @@ namespace Triangle.Dream
         private void SetPointVisible(bool visible)
         {
             _pointVisible = visible;
+
+            // Toggling the root is what actually hides the point: the mesh and the light
+            // are children, so deactivating them individually was redundant once the
+            // parent went inactive. The child calls are kept as the explicit expression
+            // of intent for anyone reading the hierarchy.
             gameObject.SetActive(visible);
+
             if (_mesh != null)
             {
                 _mesh.gameObject.SetActive(visible);

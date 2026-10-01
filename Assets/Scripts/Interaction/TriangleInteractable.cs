@@ -42,7 +42,11 @@ namespace Triangle.Interaction
 
         public void Interact(GameObject interactor)
         {
-            if (!InteractionEnabled)
+            // Gate on the same predicate the focus finder uses. Checking only
+            // InteractionEnabled here let a disabled component still fire, which
+            // meant an interaction could land on something the player could not see
+            // or focus in the first place.
+            if (!IsUsable)
             {
                 return;
             }

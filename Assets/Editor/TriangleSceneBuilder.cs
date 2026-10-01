@@ -25,20 +25,41 @@ namespace Triangle.EditorTools
         [MenuItem("Triangle/Rebuild Playable Scene")]
         public static void RebuildPlayableScene()
         {
+            // NewSceneMode.Single discards whatever is open, and the editor prompts to
+            // save it when interactive. Without this, picking the menu item with unsaved
+            // work queued up a modal nobody read and then threw the work away anyway.
+            if (!Application.isBatchMode && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+            {
+                TriangleLog.Warn("Playable scene rebuild cancelled; the open scene was left untouched.");
+                return;
+            }
+
             Directory.CreateDirectory(Path.Combine(Application.dataPath, "Scenes"));
 
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             var bootstrapObject = new GameObject("TriangleBootstrap");
+            Undo.RegisterCreatedObjectUndo(bootstrapObject, "Create TriangleBootstrap");
             bootstrapObject.AddComponent<TriangleBootstrap>();
 
-            EditorSceneManager.MarkSceneDirty(scene);
-            EditorSceneManager.SaveScene(scene, ScenePath);
+            if (!EditorSceneManager.SaveScene(scene, ScenePath))
+            {
+                TriangleLog.Error($"Playable scene could not be written to {ScenePath}.");
+                return;
+            }
 
             AddSceneToBuildSettings();
             AssetDatabase.SaveAssets();
 
-            Debug.Log($"[Triangle] Playable scene written to {ScenePath}");
+            TriangleLog.Log($"Playable scene written to {ScenePath}");
+        }
+
+        [MenuItem("Triangle/Rebuild Playable Scene", true)]
+        private static bool ValidateRebuildPlayableScene()
+        {
+            // Never let this run during a play session: it would replace the live scene
+            // out from under the running dream.
+            return !EditorApplication.isPlayingOrWillChangePlaymode;
         }
 
         private static void AddSceneToBuildSettings()

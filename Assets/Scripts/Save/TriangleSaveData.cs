@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Triangle.Core;
 using UnityEngine;
 
 namespace Triangle.Save
@@ -18,6 +17,25 @@ namespace Triangle.Save
     {
         /// <summary>Version written by the current persistence format. Zero denotes a pre-versioned save.</summary>
         public const int CurrentSchemaVersion = 2;
+
+        /// <summary>
+        /// Marker written into every save this build produces.
+        ///
+        /// Schema version alone cannot tell a save from a file that merely parses. A
+        /// truncated or hand-edited JSON document, or an unrelated file dropped at the
+        /// slot path, will happily deserialise into a default-constructed object - all
+        /// zeroes, empty lists, schema 0 - and every check downstream passes. The player
+        /// then loads what looks like a real save and silently loses all progression.
+        /// A literal marker turns that class of mistake into a refused load.
+        ///
+        /// Pre-signature saves (schema 1 and earlier) legitimately have an empty value
+        /// here, so an absent marker is tolerated for them and only required from
+        /// <see cref="CurrentSchemaVersion"/> onward.
+        /// </summary>
+        public const string ExpectedSignature = "THE_TRIANGLE_DREAM";
+
+        /// <summary>Format marker. Empty on pre-signature saves.</summary>
+        public string Signature = string.Empty;
 
         /// <summary>Version of the serialized field layout used by this snapshot.</summary>
         public int SchemaVersion;

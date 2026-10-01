@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using Triangle.Core;
 using Triangle.Dream;
-using Triangle.World;
 using UnityEngine;
 
 namespace Triangle.World
@@ -118,16 +117,21 @@ namespace Triangle.World
         }
 
         /// <summary>Spawns a plain box and records it for teardown. Position is in metres.</summary>
-        private GameObject AddBox(Vector3 position, Vector3 scale, Quaternion? rotation = null, Color? color = null)
+        private GameObject AddBox(Vector3 position, Vector3 scale, Quaternion? rotation = null, Color? color = null,
+            TriangleProceduralTextures.SurfaceKind? surface = null, float tiling = 1f)
         {
-            GameObject box = Track(TriangleShapes.CreateShape("RoomPiece", TriangleShapes.Cube, transform));
-            box.transform.SetParent(transform, true);
+            // CreateShape already parents to this transform with worldPositionStays
+            // false; reparenting again with worldPositionStays true only added a
+            // redundant transform write per piece. The builder sits at the origin with
+            // an identity rotation, so world and local placement coincide here.
+            GameObject box = TriangleShapes.CreateShape("RoomPiece", TriangleShapes.Cube, transform);
             box.transform.position = position;
             box.transform.rotation = rotation ?? Quaternion.identity;
             box.transform.localScale = scale;
+            Track(box);
 
             MeshRenderer renderer = box.GetComponent<MeshRenderer>();
-            renderer.sharedMaterial = TriangleShapes.GetMaterial(color ?? WallColor);
+            renderer.sharedMaterial = TriangleShapes.GetMaterial(color ?? WallColor, surface, tiling);
 
             var collider = box.AddComponent<BoxCollider>();
             collider.size = Vector3.one;
@@ -137,29 +141,37 @@ namespace Triangle.World
         private void BuildShell()
         {
             // Floor / ceiling.
-            AddBox(new Vector3(0f, -0.1f, 0f), new Vector3(roomHalfX * 2f, 0.2f, roomHalfZ * 2f), color: FloorColor);
-            AddBox(new Vector3(0f, roomHeight + 0.1f, 0f), new Vector3(roomHalfX * 2f, 0.15f, roomHalfZ * 2f), color: CeilingColor);
+            AddBox(new Vector3(0f, -0.1f, 0f), new Vector3(roomHalfX * 2f, 0.2f, roomHalfZ * 2f),
+                color: FloorColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.9f);
+            AddBox(new Vector3(0f, roomHeight + 0.1f, 0f), new Vector3(roomHalfX * 2f, 0.15f, roomHalfZ * 2f),
+                color: CeilingColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.7f);
 
             // Back wall (Z negative) - has the window, built as a thin full wall plus
             // the window light source in BuildWindow().
-            AddBox(new Vector3(0f, roomHeight * 0.5f, -roomHalfZ), new Vector3(roomHalfX * 2f, roomHeight, WallThickness), color: WallColor);
+            AddBox(new Vector3(0f, roomHeight * 0.5f, -roomHalfZ), new Vector3(roomHalfX * 2f, roomHeight, WallThickness),
+                color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.8f);
 
             // Left / right walls.
-            AddBox(new Vector3(-roomHalfX, roomHeight * 0.5f, 0f), new Vector3(WallThickness, roomHeight, roomHalfZ * 2f), color: WallColor);
-            AddBox(new Vector3(roomHalfX, roomHeight * 0.5f, 0f), new Vector3(WallThickness, roomHeight, roomHalfZ * 2f), color: WallColor);
+            AddBox(new Vector3(-roomHalfX, roomHeight * 0.5f, 0f), new Vector3(WallThickness, roomHeight, roomHalfZ * 2f),
+                color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.8f);
+            AddBox(new Vector3(roomHalfX, roomHeight * 0.5f, 0f), new Vector3(WallThickness, roomHeight, roomHalfZ * 2f),
+                color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.8f);
 
             // Front wall (Z positive) with the door gap.
             float leftWidth = DoorGapMinX + roomHalfX;
             AddBox(new Vector3((DoorGapMinX - roomHalfX) * 0.5f, roomHeight * 0.5f, roomHalfZ),
-                new Vector3(leftWidth, roomHeight, WallThickness), color: WallColor);
+                new Vector3(leftWidth, roomHeight, WallThickness),
+                color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.8f);
 
             float rightWidth = roomHalfX - DoorGapMaxX;
             AddBox(new Vector3((DoorGapMaxX + roomHalfX) * 0.5f, roomHeight * 0.5f, roomHalfZ),
-                new Vector3(rightWidth, roomHeight, WallThickness), color: WallColor);
+                new Vector3(rightWidth, roomHeight, WallThickness),
+                color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.8f);
 
             // Lintel above the gap.
             AddBox(new Vector3((DoorGapMinX + DoorGapMaxX) * 0.5f, (roomHeight + DoorGapHeight) * 0.5f, roomHalfZ),
-                new Vector3(DoorGapMaxX - DoorGapMinX, roomHeight - DoorGapHeight, WallThickness), color: WallColor);
+                new Vector3(DoorGapMaxX - DoorGapMinX, roomHeight - DoorGapHeight, WallThickness),
+                color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.8f);
         }
 
         private void BuildWindow()
@@ -189,46 +201,99 @@ namespace Triangle.World
             GameObject mullion = AddBox(new Vector3(0f, 1.55f, wallFace + 0.08f), new Vector3(1.14f, 0.055f, 0.05f));
             mullion.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.09f, 0.08f, 0.07f));
             mullion.GetComponent<BoxCollider>().enabled = false;
+
+            // The window is examinable. "The moon is on the wrong side of the window" is
+            // already one of the false-awakening difference lines, so the player meets the
+            // idea here first and recognises it later.
+            //
+            // The pane keeps its collider: the interaction finder searches colliders, so a
+            // collider-free pane makes this inspectable impossible to reach no matter where
+            // the player stands. Only the purely decorative frame and mullion are
+            // collider-free, and they are thick enough not to need one.
+            var windowInspectable = window.AddComponent<TriangleInspectable>();
+            windowInspectable.Configure(
+                "Window",
+                "The moon is on the wrong side of the window.",
+                10f, 3f,
+                "MoonWrongSide");
         }
 
         private void BuildBed()
         {
             // Frame, mattress and pillow reads as a bed in the dark.
-            AddBox(new Vector3(-2.2f, 0.15f, 1.5f), new Vector3(1.0f, 0.3f, 2.0f), color: WoodColor);
-            AddBox(new Vector3(-2.2f, 0.42f, 1.5f), new Vector3(0.95f, 0.12f, 1.9f), color: MattressColor);
-            AddBox(new Vector3(-2.32f, 0.53f, 0.6f), new Vector3(0.7f, 0.10f, 0.45f), color: LinenColor);
+            GameObject frame = AddBox(new Vector3(-2.2f, 0.15f, 1.5f), new Vector3(1.0f, 0.3f, 2.0f),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.4f);
+            AddBox(new Vector3(-2.2f, 0.42f, 1.5f), new Vector3(0.95f, 0.12f, 1.9f),
+                color: MattressColor, surface: TriangleProceduralTextures.SurfaceKind.Fabric, tiling: 2.2f);
+            AddBox(new Vector3(-2.32f, 0.53f, 0.6f), new Vector3(0.7f, 0.10f, 0.45f),
+                color: LinenColor, surface: TriangleProceduralTextures.SurfaceKind.Fabric, tiling: 3.0f);
             // Headboard.
-            AddBox(new Vector3(-2.2f, 0.55f, 2.52f), new Vector3(1.0f, 0.75f, 0.12f), color: WoodColor);
+            AddBox(new Vector3(-2.2f, 0.55f, 2.52f), new Vector3(1.0f, 0.75f, 0.12f),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.4f);
+
+            // "You are still ten years old" is another false-awakening difference line.
+            var bedInspectable = frame.AddComponent<TriangleInspectable>();
+            bedInspectable.Configure(
+                "Bed",
+                "You are still ten years old.",
+                8f, 3f,
+                "StillTen");
         }
 
         private void BuildDesk()
         {
-            AddBox(new Vector3(2.0f, 0.55f, -0.8f), new Vector3(0.6f, 0.7f, 1.2f), color: WoodColor);
+            AddBox(new Vector3(2.0f, 0.55f, -0.8f), new Vector3(0.6f, 0.7f, 1.2f),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.2f);
         }
 
         private void BuildClock()
         {
             // A deliberately ordinary bedroom clock, stopped at twelve. The motif can
             // now refer to something the player has actually seen in the room.
-            Vector3 clockPosition = new Vector3(roomHalfX - 0.05f, 2.05f, -0.8f);
+            //
+            // Sized like a real bedroom clock (~26 cm across, 4 cm deep) and pushed just
+            // proud of the wall's inner face. The previous 0.68 radius put a 1.36 m disc
+            // through the floor and ceiling while its centre sat inside the wall, so the
+            // clock was both unreadable and invisible.
+            const float clockRadius = 0.13f;
+            const float clockDepth = 0.02f;
+            float wallFaceX = roomHalfX - WallThickness * 0.5f;
+
             GameObject clock = TriangleShapes.CreateShape("Clock", TriangleShapes.Cylinder, transform);
             clock.transform.SetParent(transform, true);
-            clock.transform.position = clockPosition;
             // Unity's cylinder runs along Y; rotate it so the disc faces into the room.
             clock.transform.rotation = Quaternion.Euler(0f, 0f, 90f);
-            clock.transform.localScale = new Vector3(0.04f, 0.68f, 0.68f);
+            clock.transform.position = new Vector3(wallFaceX + clockDepth, 2.05f, -0.8f);
+            clock.transform.localScale = new Vector3(clockDepth * 2f, clockRadius * 2f, clockRadius * 2f);
             clock.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.28f, 0.24f, 0.18f));
+
+            // The clock is the interaction finder's entry point for this whole
+            // progression beat, and that finder only ever sees colliders. A
+            // collider-free clock made the ClockStops12 objective unreachable.
+            clock.AddComponent<BoxCollider>().size = Vector3.one;
             Track(clock);
 
             // Both hands point to twelve; their different lengths remain readable at a
-            // distance without requiring a texture or imported clock mesh.
-            GameObject longHand = AddBox(new Vector3(roomHalfX - 0.10f, 2.31f, -0.8f), new Vector3(0.025f, 0.52f, 0.035f));
+            // distance without requiring a texture or imported clock mesh. They sit a
+            // hair further into the room than the rim so they are never z-fought.
+            float handX = wallFaceX + clockDepth * 2f + 0.005f;
+            GameObject longHand = AddBox(new Vector3(handX, 2.05f + 0.065f, -0.8f), new Vector3(0.006f, 0.13f, 0.008f));
             longHand.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.72f, 0.68f, 0.58f));
             longHand.GetComponent<BoxCollider>().enabled = false;
 
-            GameObject shortHand = AddBox(new Vector3(roomHalfX - 0.10f, 2.19f, -0.8f), new Vector3(0.025f, 0.36f, 0.045f));
+            GameObject shortHand = AddBox(new Vector3(handX, 2.05f + 0.045f, -0.8f), new Vector3(0.006f, 0.09f, 0.011f));
             shortHand.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.72f, 0.68f, 0.58f));
             shortHand.GetComponent<BoxCollider>().enabled = false;
+
+            // The clock is the anchor for the ClockStops12 motif, so examining it should
+            // put that phrase in the player's Recognition catalogue. Otherwise the motif
+            // fires at a clock the player has never consciously looked at.
+            var clockInspectable = clock.AddComponent<TriangleInspectable>();
+            clockInspectable.Configure(
+                "Clock",
+                "The clock has stopped. Both hands point to twelve.",
+                12f, 4f,
+                "ClockStops12");
         }
 
         private void BuildNotebook()
@@ -260,32 +325,44 @@ namespace Triangle.World
 
         private void BuildLighting()
         {
+            // Ambient and fog are process-wide, so this environment declares them
+            // through an atmosphere component that owns them for as long as the room
+            // exists and hands them back on teardown. The values are unchanged from
+            // when they were written straight to RenderSettings.
+            //
             // Ambient is kept very low and cold. A bright ambient term is what made the
             // whole shell read as flat pasteboard: it lights every surface equally, so
             // nothing has shape. Almost all of the room's form should come from the
             // window, with the corners falling away into the fog.
-            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = new Color(0.20f, 0.24f, 0.34f);
-            RenderSettings.ambientEquatorColor = new Color(0.09f, 0.10f, 0.13f);
-            RenderSettings.ambientGroundColor = new Color(0.03f, 0.03f, 0.04f);
-            RenderSettings.ambientIntensity = 0.40f;
+            GameObject atmosphereObject = Track(new GameObject("RoomAtmosphere"));
+            atmosphereObject.transform.SetParent(transform, false);
+
+            var atmosphere = atmosphereObject.AddComponent<TriangleEnvironmentAtmosphere>();
+            atmosphere.Ambient = UnityEngine.Rendering.AmbientMode.Trilight;
+            atmosphere.SkyColor = new Color(0.20f, 0.24f, 0.34f);
+            atmosphere.EquatorColor = new Color(0.09f, 0.10f, 0.13f);
+            atmosphere.GroundColor = new Color(0.03f, 0.03f, 0.04f);
+            atmosphere.Intensity = 0.40f;
+            atmosphere.FogEnabled = true;
+            atmosphere.Fog = FogMode.ExponentialSquared;
+            atmosphere.FogDensity = 0.016f;
+            atmosphere.FogColor = new Color(0.045f, 0.055f, 0.080f);
+            atmosphere.Apply();
 
             // The window is the key light: cold, and the only strong source. Its range
             // has to reach the far wall or the room reads as a black void with a bright
-            // rectangle floating in it.
+            // rectangle floating in it. It is also the only shadow caster, which is what
+            // gives the furniture and the player any sense of volume.
             AddLight("WindowLight", new Vector3(0f, 1.55f, -roomHalfZ + 0.45f),
-                new Color(0.52f, 0.66f, 0.95f), 3.4f, 14f);
+                new Color(0.52f, 0.66f, 0.95f), 3.4f, 14f, LightShadows.Soft);
 
-            // Ceiling fill - dim and warm, so the two sources disagree in colour.
+            // Ceiling fill - dim and warm, and deliberately shadowless so it lifts the
+            // corners without flattening the window's shadows.
             AddLight("CeilingFill", new Vector3(0f, 2.55f, 0.8f), new Color(0.62f, 0.52f, 0.40f), 0.60f, 8f);
-
-            RenderSettings.fog = true;
-            RenderSettings.fogMode = FogMode.ExponentialSquared;
-            RenderSettings.fogDensity = 0.016f;
-            RenderSettings.fogColor = new Color(0.045f, 0.055f, 0.080f);
         }
 
-        private void AddLight(string lightName, Vector3 position, Color color, float intensity, float range)
+        private void AddLight(string lightName, Vector3 position, Color color, float intensity, float range,
+            LightShadows shadows = LightShadows.None)
         {
             GameObject lightObject = Track(new GameObject(lightName));
             lightObject.transform.SetParent(transform, true);
@@ -295,7 +372,13 @@ namespace Triangle.World
             light.color = color;
             light.intensity = intensity;
             light.range = range;
-            light.shadows = LightShadows.None;
+            light.shadows = shadows;
+            if (shadows != LightShadows.None)
+            {
+                light.shadowStrength = 0.85f;
+                light.shadowBias = 0.02f;
+                light.shadowNearPlane = 0.05f;
+            }
         }
     }
 }

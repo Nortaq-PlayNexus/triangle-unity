@@ -1,5 +1,4 @@
 using System;
-using Triangle.Core;
 using Triangle.Player;
 using Triangle.World;
 using UnityEngine;
@@ -14,7 +13,7 @@ namespace Triangle.Core
     /// and debug tooling a single authoritative spot to request transitions.
     ///
     /// Port of UTriangleGameFlowSubsystem. The UE WorldSubsystem becomes a plain
-    /// class hosted by the bootstrap; its world timers become Invoke calls.
+    /// class hosted by the bootstrap; its world timers become scheduler callbacks.
     /// </summary>
     public class TriangleGameFlow
     {
@@ -23,6 +22,7 @@ namespace Triangle.Core
 
         private const string IdChildhoodBedroom = "ChildhoodBedroom";
         private const string IdUndergroundStation = "UndergroundStation";
+        private const string IdYardOutside = "YardOutside";
 
         // Scheduler keys. Stable keys mean re-requesting a transition replaces the
         // pending callback rather than stacking a second one.
@@ -41,6 +41,17 @@ namespace Triangle.Core
 
         public bool HasActiveEnvironment => _activeBuilder != null;
 
+        /// <summary>
+        /// The live builder GameObject for the current environment, or null.
+        ///
+        /// Consumers that need the environment's generated start should ask here rather
+        /// than scanning the scene for a builder. Scene scans can observe a builder that
+        /// the previous frame's Object.Destroy has not yet collected, and the room
+        /// builder was always checked first, so a bedroom start could be handed back
+        /// while the player was standing in the station.
+        /// </summary>
+        public GameObject ActiveEnvironment => _activeBuilder;
+
         public string CurrentEnvironmentId => _currentEnvironmentId;
 
         public bool LastBedroomDoorOpen => _lastBedroomDoorOpen;
@@ -56,17 +67,27 @@ namespace Triangle.Core
 
         public static string IdFor(TriangleDreamEnvironment environment)
         {
-            return environment == TriangleDreamEnvironment.UndergroundStation ? IdUndergroundStation : IdChildhoodBedroom;
+            switch (environment)
+            {
+                case TriangleDreamEnvironment.UndergroundStation: return IdUndergroundStation;
+                case TriangleDreamEnvironment.YardOutside: return IdYardOutside;
+                default: return IdChildhoodBedroom;
+            }
         }
 
         public static TriangleDreamEnvironment EnvironmentForId(string id)
         {
-            return id == IdUndergroundStation ? TriangleDreamEnvironment.UndergroundStation : TriangleDreamEnvironment.ChildhoodBedroom;
+            switch (id)
+            {
+                case IdUndergroundStation: return TriangleDreamEnvironment.UndergroundStation;
+                case IdYardOutside: return TriangleDreamEnvironment.YardOutside;
+                default: return TriangleDreamEnvironment.ChildhoodBedroom;
+            }
         }
 
         public static bool IsKnownEnvironmentId(string id)
         {
-            return id == IdChildhoodBedroom || id == IdUndergroundStation;
+            return id == IdChildhoodBedroom || id == IdUndergroundStation || id == IdYardOutside;
         }
 
         /// <summary>Ensures the requested environment exists, swapping immediately.</summary>
@@ -141,36 +162,42 @@ namespace Triangle.Core
                 return false;
             }
 
-            GameObject previousBuilder = _activeBuilder;
             string targetId = IdFor(environment);
-            bool wantsStation = environment == TriangleDreamEnvironment.UndergroundStation;
 
-            // Tear the old environment down before building the replacement, so the
-            // two never overlap. If the build then fails the player is left in an
-            // empty room rather than a half-swapped one.
-            if (previousBuilder != null && _currentEnvironmentId == targetId)
+            // The caller is responsible for the "already there" case; this method always
+            // tears down and rebuilds. It used to carry an empty if-branch to skip the
+            // rebuild, which meant a same-environment request arriving through
+            // FinishTimedTransition silently reused the old builder while still running
+            // the "environment ready" path - so a redundant transition looked like it
+            // had rebuilt the world when it had not.
+            GameObject previousBuilder = _activeBuilder;
+            if (previousBuilder != null)
             {
-                // Same environment already built.
-            }
-            else
-            {
-                if (previousBuilder != null)
+                if (_currentEnvironmentId == IdChildhoodBedroom)
                 {
-                    if (_currentEnvironmentId == IdChildhoodBedroom)
+                    TriangleDoor door = previousBuilder.GetComponentInChildren<TriangleDoor>();
+                    if (door != null)
                     {
-                        TriangleDoor door = previousBuilder.GetComponentInChildren<TriangleDoor>();
-                        if (door != null)
-                        {
-                            _lastBedroomDoorOpen = door.IsOpen;
-                        }
+                        _lastBedroomDoorOpen = door.IsOpen;
                     }
-
-                    UnityEngine.Object.Destroy(previousBuilder);
-                    _activeBuilder = null;
                 }
 
-                _activeBuilder = BuildEnvironment(wantsStation);
+                DetachDoorHandlers(previousBuilder);
+
+                // Tell the outgoing environment to give up the global render settings
+                // before it is torn down. Object.Destroy is deferred to the end of the
+                // frame, so without this the incoming builder's Awake would apply its own
+                // atmosphere and then the outgoing one's OnDestroy would run afterwards
+                // and put the old room's ambient and fog back.
+                TriangleEnvironmentAtmosphere outgoingAtmosphere =
+                    previousBuilder.GetComponentInChildren<TriangleEnvironmentAtmosphere>(true);
+                outgoingAtmosphere?.MarkReplaced();
+
+                UnityEngine.Object.Destroy(previousBuilder);
+                _activeBuilder = null;
             }
+
+            _activeBuilder = BuildEnvironment(environment);
 
             if (_activeBuilder == null)
             {
@@ -180,7 +207,7 @@ namespace Triangle.Core
 
             _currentEnvironmentId = targetId;
 
-            // Builders create their own tagged DreamStart in Start. Move the pawn only
+            // Builders create their own tagged DreamStart in Awake. Move the pawn only
             // after the new environment has finished building so startup and loaded
             // transitions use exactly the same path.
             Transform destination = FindDreamStart(_activeBuilder);
@@ -207,13 +234,53 @@ namespace Triangle.Core
             return true;
         }
 
-        private GameObject BuildEnvironment(bool station)
+        /// <summary>
+        /// Unhooks the flow from a builder's door.
+        ///
+        /// The door is destroyed with its environment, so the stale subscription died
+        /// with it. Unsubscribing explicitly matters because a destroyed component
+        /// still keeps the flow alive as a delegate target, and the same door can be
+        /// re-found while its GameObject is pending destruction.
+        /// </summary>
+        private void DetachDoorHandlers(GameObject builder)
         {
-            var host = new GameObject(station ? "TriangleStationBuilder" : "TriangleRoomBuilder");
+            if (builder == null)
+            {
+                return;
+            }
+
+            TriangleDoor door = builder.GetComponentInChildren<TriangleDoor>();
+            if (door != null)
+            {
+                door.OnTransitionRequested -= HandleDoorTransitionRequested;
+            }
+        }
+
+        private GameObject BuildEnvironment(TriangleDreamEnvironment environment)
+        {
+            GameObject host;
+            switch (environment)
+            {
+                case TriangleDreamEnvironment.UndergroundStation:
+                    host = new GameObject("TriangleStationBuilder");
+                    break;
+                case TriangleDreamEnvironment.YardOutside:
+                    host = new GameObject("TriangleYardBuilder");
+                    break;
+                default:
+                    host = new GameObject("TriangleRoomBuilder");
+                    break;
+            }
+
             host.transform.SetParent(_host.transform, false);
-            if (station)
+
+            if (environment == TriangleDreamEnvironment.UndergroundStation)
             {
                 host.AddComponent<TriangleStationBuilder>();
+            }
+            else if (environment == TriangleDreamEnvironment.YardOutside)
+            {
+                host.AddComponent<TriangleYardBuilder>();
             }
             else
             {
@@ -235,6 +302,12 @@ namespace Triangle.Core
             if (station != null && station.DreamStart != null)
             {
                 return station.DreamStart;
+            }
+
+            TriangleYardBuilder yard = builder.GetComponent<TriangleYardBuilder>();
+            if (yard != null && yard.DreamStart != null)
+            {
+                return yard.DreamStart;
             }
 
             // Fall back to any tagged start the builder may have produced.
@@ -304,8 +377,11 @@ namespace Triangle.Core
                 scheduler.Cancel(KeyUnlockInput);
             }
 
+            DetachDoorHandlers(_activeBuilder);
+
             SetTransitionInputLocked(false);
             _transitioning = false;
+            _activeBuilder = null;
         }
     }
 }

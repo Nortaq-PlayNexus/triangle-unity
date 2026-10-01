@@ -39,17 +39,46 @@ namespace Triangle.Core
 
         /// <summary>
         /// Converts an Unreal rotator (pitch, yaw, roll) to a Unity rotation.
-        /// Pitch is negated because the handedness mapping mirrors the up axis.
+        ///
+        /// The forward axis is built by hand rather than handed to
+        /// <c>Quaternion.LookRotation</c> because that call is degenerate at the poles:
+        /// at +/-90 degrees of pitch the forward vector becomes parallel to the up
+        /// vector, Unity falls back to identity, and the requested pitch is silently
+        /// discarded. The anomaly builder rotates parts by 90 degrees on purpose (the
+        /// razor gap lying in the plane of a wall, the three doorway blades), so that
+        /// fallback was losing real authored orientation.
+        ///
+        /// The basis is built explicitly instead, and roll is applied about the
+        /// resulting forward axis so it is honoured rather than dropped.
         /// </summary>
         public static Quaternion Rot(float pitchDegrees, float yawDegrees, float rollDegrees = 0f)
         {
+            if (float.IsNaN(pitchDegrees) || float.IsInfinity(pitchDegrees)) pitchDegrees = 0f;
+            if (float.IsNaN(yawDegrees) || float.IsInfinity(yawDegrees)) yawDegrees = 0f;
+            if (float.IsNaN(rollDegrees) || float.IsInfinity(rollDegrees)) rollDegrees = 0f;
+
             float pitch = pitchDegrees * Mathf.Deg2Rad;
             float yaw = yawDegrees * Mathf.Deg2Rad;
-            Vector3 ueForward = new Vector3(
-                Mathf.Cos(pitch) * Mathf.Cos(yaw),
-                Mathf.Cos(pitch) * Mathf.Sin(yaw),
-                Mathf.Sin(pitch));
-            return Quaternion.LookRotation(Dir(ueForward).normalized, Vector3.up);
+
+            // Unreal FRotator: X forward, Y right, Z up.
+            float cosPitch = Mathf.Cos(pitch);
+            var forwardUe = new Vector3(cosPitch * Mathf.Cos(yaw), cosPitch * Mathf.Sin(yaw), Mathf.Sin(pitch));
+            var rightUe = new Vector3(-Mathf.Sin(yaw), Mathf.Cos(yaw), 0f);
+            var upUe = Vector3.Cross(forwardUe, rightUe);
+
+            Vector3 forward = Dir(forwardUe);
+            Vector3 right = Dir(rightUe);
+            Vector3 up = Dir(upUe);
+
+            if (rollDegrees != 0f)
+            {
+                Quaternion roll = Quaternion.AngleAxis(rollDegrees, forward);
+                forward = roll * forward;
+                right = roll * right;
+                up = roll * up;
+            }
+
+            return Quaternion.LookRotation(forward, up);
         }
 
         /// <summary>Converts a zero-rotation placeholder.</summary>
@@ -63,11 +92,14 @@ namespace Triangle.Core
         public static Vector3 Scale(float x, float y, float z) => new Vector3(x, y, z);
     }
 
-    /// <summary>The two environments included in the current playable vertical slice.</summary>
+    /// <summary>The environments included in the current playable vertical slice.</summary>
     public enum TriangleDreamEnvironment
     {
         ChildhoodBedroom,
-        UndergroundStation
+        UndergroundStation,
+
+        /// <summary>The yard outside the bedroom. The first environment with weather.</summary>
+        YardOutside
     }
 
     /// <summary>

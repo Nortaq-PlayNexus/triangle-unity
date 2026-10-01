@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using Triangle.Core;
 using Triangle.Dream;
-using Triangle.World;
 using UnityEngine;
 
 namespace Triangle.World
@@ -28,6 +27,13 @@ namespace Triangle.World
 
         private const float WallThickness = 0.2f;
         private const float TrackGap = 1.5f; // was Unreal 150 half-gap between platform edge and track
+
+        /// <summary>
+        /// Centre line of a platform, in metres. The track bed occupies the open band
+        /// between -TrackGap and +TrackGap, so anything the player is meant to stand
+        /// on has to sit outside that.
+        /// </summary>
+        private float PlatformCentreX => (stationHalfX + TrackGap) * 0.5f;
 
         /// <summary>
         /// Cool, dirty concrete tones. As with the bedroom, a single shared bright grey
@@ -75,9 +81,12 @@ namespace Triangle.World
             BuildCornerPoint();
             BuildLighting();
 
-            // Player spawn on the right-hand platform, facing the tracks.
+            // Player spawn on the right-hand platform, facing the tracks across the bed.
+            // The previous value was x = 0, which is the middle of the track gap: the
+            // pawn was dropped onto the rails, contradicting the comment and the test
+            // that claims to check for it.
             GameObject start = Track(new GameObject("DreamStart"));
-            start.transform.position = new Vector3(0f, platformHeight + 1.0f, 2.5f);
+            start.transform.position = new Vector3(PlatformCentreX, platformHeight + 1.0f, 2.5f);
             start.transform.rotation = Quaternion.Euler(0f, 270f, 0f);
             start.tag = "DreamStart";
             _dreamStart = start.transform;
@@ -108,15 +117,19 @@ namespace Triangle.World
         }
 
         /// <summary>Spawns a plain box and records it for teardown. Position is in metres.</summary>
-        private GameObject AddBox(Vector3 position, Vector3 scale, Quaternion? rotation = null, Color? color = null)
+        private GameObject AddBox(Vector3 position, Vector3 scale, Quaternion? rotation = null, Color? color = null,
+            TriangleProceduralTextures.SurfaceKind? surface = null, float tiling = 1f)
         {
-            GameObject box = Track(TriangleShapes.CreateShape("StationPiece", TriangleShapes.Cube, transform));
-            box.transform.SetParent(transform, true);
+            // CreateShape already parents to this transform with worldPositionStays
+            // false, so the second SetParent that used to follow added nothing.
+            GameObject box = TriangleShapes.CreateShape("StationPiece", TriangleShapes.Cube, transform);
             box.transform.position = position;
             box.transform.rotation = rotation ?? Quaternion.identity;
             box.transform.localScale = scale;
+            Track(box);
+
             box.GetComponent<MeshRenderer>().sharedMaterial =
-                TriangleShapes.GetMaterial(color ?? new Color(0.34f, 0.34f, 0.33f));
+                TriangleShapes.GetMaterial(color ?? ConcreteColor, surface, tiling);
             box.AddComponent<BoxCollider>().size = Vector3.one;
             return box;
         }
@@ -125,82 +138,86 @@ namespace Triangle.World
         {
             // Floor - concrete-grey, slightly warm.
             AddBox(new Vector3(0f, -0.1f, 0f), new Vector3(stationHalfX * 2f, 0.2f, stationHalfZ * 2f),
-                color: ConcreteColor);
+                color: ConcreteColor, surface: TriangleProceduralTextures.SurfaceKind.Concrete, tiling: 0.7f);
 
             // Ceiling - low, oppressive.
             AddBox(new Vector3(0f, stationHeight + 0.1f, 0f), new Vector3(stationHalfX * 2f, 0.15f, stationHalfZ * 2f),
-                color: CeilingColor);
+                color: CeilingColor, surface: TriangleProceduralTextures.SurfaceKind.Concrete, tiling: 0.5f);
 
             // Side walls.
             AddBox(new Vector3(-stationHalfX, stationHeight * 0.5f, 0f), new Vector3(WallThickness, stationHeight, stationHalfZ * 2f),
-                color: WallColor);
+                color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Concrete, tiling: 0.6f);
             AddBox(new Vector3(stationHalfX, stationHeight * 0.5f, 0f), new Vector3(WallThickness, stationHeight, stationHalfZ * 2f),
-                color: WallColor);
+                color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Concrete, tiling: 0.6f);
 
             // End wall (far end - dark, no exit).
             AddBox(new Vector3(0f, stationHeight * 0.5f, -stationHalfZ), new Vector3(stationHalfX * 2f, stationHeight, WallThickness),
-                color: EndWallColor);
+                color: EndWallColor, surface: TriangleProceduralTextures.SurfaceKind.Concrete, tiling: 0.6f);
+
+            // Near end wall. Without it the tunnel simply stopped at z = +stationHalfZ
+            // and the player could walk straight off the end of the world.
+            AddBox(new Vector3(0f, stationHeight * 0.5f, stationHalfZ), new Vector3(stationHalfX * 2f, stationHeight, WallThickness),
+                color: EndWallColor, surface: TriangleProceduralTextures.SurfaceKind.Concrete, tiling: 0.6f);
         }
 
         private void BuildPlatforms()
         {
             // Raised blocks either side of the track bed.
             float platformDepth = (stationHalfX - TrackGap) * 0.5f;
-            float platformCentreX = (stationHalfX + TrackGap) * 0.5f;
+            float platformCentreX = PlatformCentreX;
 
             AddBox(new Vector3(-platformCentreX, platformHeight * 0.5f, 0f),
                 new Vector3(platformDepth, platformHeight, stationHalfZ * 2f),
-                color: PlatformColor);
+                color: PlatformColor, surface: TriangleProceduralTextures.SurfaceKind.Concrete, tiling: 0.8f);
             AddBox(new Vector3(platformCentreX, platformHeight * 0.5f, 0f),
                 new Vector3(platformDepth, platformHeight, stationHalfZ * 2f),
-                color: PlatformColor);
+                color: PlatformColor, surface: TriangleProceduralTextures.SurfaceKind.Concrete, tiling: 0.8f);
 
-            // Platform surface markings - thin lighter strips near the edge.
-            AddBox(new Vector3(-(stationHalfX - 0.05f), platformHeight + 0.01f, 0f),
-                new Vector3(0.05f, 0.1f, stationHalfZ * 2f - 0.4f),
-                color: SafetyLineColor);
-            AddBox(new Vector3(stationHalfX - 0.05f, platformHeight + 0.01f, 0f),
-                new Vector3(0.05f, 0.1f, stationHalfZ * 2f - 0.4f),
-                color: SafetyLineColor);
+            // Platform surface markings - thin lighter strips near the edge. These are
+            // paint: no collider, so they cannot snag the pawn or the interaction scan.
+            GameObject leftLine = AddBox(new Vector3(-(stationHalfX - 0.05f), platformHeight + 0.01f, 0f),
+                new Vector3(0.05f, 0.1f, stationHalfZ * 2f - 0.4f), color: SafetyLineColor);
+            leftLine.GetComponent<BoxCollider>().enabled = false;
+            GameObject rightLine = AddBox(new Vector3(stationHalfX - 0.05f, platformHeight + 0.01f, 0f),
+                new Vector3(0.05f, 0.1f, stationHalfZ * 2f - 0.4f), color: SafetyLineColor);
+            rightLine.GetComponent<BoxCollider>().enabled = false;
         }
 
         private void BuildTracks()
         {
             // Two dark strips for the track bed between platforms.
-            AddBox(new Vector3(-1.5f, 0.02f, 0f), new Vector3(0.3f, 0.1f, stationHalfZ * 2f),
-                color: TrackColor);
-            AddBox(new Vector3(1.5f, 0.02f, 0f), new Vector3(0.3f, 0.1f, stationHalfZ * 2f),
-                color: TrackColor);
+            AddBox(new Vector3(-1.5f, 0.02f, 0f), new Vector3(0.3f, 0.1f, stationHalfZ * 2f), color: TrackColor);
+            AddBox(new Vector3(1.5f, 0.02f, 0f), new Vector3(0.3f, 0.1f, stationHalfZ * 2f), color: TrackColor);
 
-            // Sleepers - thin dark boxes under the tracks.
+            // Sleepers - thin dark boxes under the tracks. Purely decorative, and the
+            // track bed already has a floor under it, so they carry no collider. Giving
+            // ~18 of them one only inflated the interaction overlap set.
             for (float z = -stationHalfZ + 0.8f; z < stationHalfZ - 0.8f; z += 0.7f)
             {
-                AddBox(new Vector3(0f, 0.01f, z), new Vector3(stationHalfX * 2f, 0.08f, 0.4f),
-                    color: SleeperColor);
+                GameObject sleeper = AddBox(new Vector3(0f, 0.01f, z), new Vector3(stationHalfX * 2f, 0.08f, 0.4f),
+                    color: SleeperColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 2.0f);
+                sleeper.GetComponent<BoxCollider>().enabled = false;
             }
         }
 
         private void BuildFluorescentLights()
         {
             // Four long fluorescent strips along the ceiling - cold, clinical.
-            var positions = new[]
+            // Only two of the four cast shadows, so the platform edges and the train get
+            // modelled without paying for four shadow maps.
+            for (int i = 0; i < 4; i++)
             {
-                new Vector3(-3.0f, 0f, stationHeight - 0.2f),
-                new Vector3(-1.0f, 0f, stationHeight - 0.2f),
-                new Vector3(1.0f, 0f, stationHeight - 0.2f),
-                new Vector3(3.0f, 0f, stationHeight - 0.2f)
-            };
+                float x = -3.0f + i * 2.0f;
+                Vector3 position = new Vector3(x, stationHeight - 0.2f, 0f);
 
-            foreach (Vector3 position in positions)
-            {
                 // The fixture - a long thin white box.
                 AddBox(position, new Vector3(0.15f, 0.15f, 4f), color: new Color(0.85f, 0.88f, 0.92f));
 
                 // The actual light. Kept modest: four of these at full strength plus
                 // ambient washed the concrete out to a flat pale grey.
-                AddLight("Fluorescent",
-                    new Vector3(position.x, position.y - 0.15f, position.z),
-                    new Color(0.80f, 0.85f, 0.92f), 0.85f, 7f);
+                AddLight("Fluorescent", new Vector3(x, stationHeight - 0.35f, 0f),
+                    new Color(0.80f, 0.85f, 0.92f), 0.85f, 7f,
+                    shadows: i % 2 == 0 ? LightShadows.Soft : LightShadows.None);
             }
         }
 
@@ -231,32 +248,41 @@ namespace Triangle.World
         {
             // Four broad amber pools are enough to keep the platform edge readable.
             // The original 26 tiny point lights looked richer in theory but were a
-            // poor trade on a GTX 1080's path.
-            float[] xs = { -3.5f, 3.5f };
-            foreach (float x in xs)
+            // poor trade on a GTX 1080's path. The name carries the x offset so the
+            // hierarchy does not end up with four identically named lights.
+            foreach (float x in new[] { -3.5f, 3.5f })
             {
-                AddLight("SafetyLeft", new Vector3(x, platformHeight + 0.08f, -1.48f),
+                string side = x < 0f ? "Left" : "Right";
+                AddLight($"Safety{side}{x:0.0}", new Vector3(x, platformHeight + 0.08f, -1.48f),
                     new Color(0.6f, 0.35f, 0.05f), 0.5f, 1.8f);
-                AddLight("SafetyRight", new Vector3(x, platformHeight + 0.08f, 1.48f),
+                AddLight($"Safety{side}{x:0.0}_Far", new Vector3(x, platformHeight + 0.08f, 1.48f),
                     new Color(0.6f, 0.35f, 0.05f), 0.5f, 1.8f);
             }
         }
 
         private void BuildPlatform12Marker()
         {
-            // Platform 12 sign post.
-            AddBox(new Vector3(-1.4f, platformHeight + 0.9f, stationHalfZ - 0.6f),
-                new Vector3(0.08f, 0.08f, 1.8f), color: new Color(0.25f, 0.25f, 0.25f));
+            // The sign stands on the left-hand platform rather than over the track bed,
+            // and its post is a single run from the platform floor all the way up to the
+            // panel. The previous version put a post at mid-height with nothing beneath
+            // it, hanging in mid-air over the rails and clipping the near end wall.
+            float signX = -PlatformCentreX;
+            const float postTop = 1.75f;
+
+            AddBox(new Vector3(signX, platformHeight + postTop * 0.5f, stationHalfZ - 1.2f),
+                new Vector3(0.08f, postTop, 0.08f), color: new Color(0.25f, 0.25f, 0.25f));
 
             // The sign itself: thin across the platform, wide along it, and tall.
-            AddBox(new Vector3(-1.4f, platformHeight + 1.4f, stationHalfZ - 0.6f),
+            float signY = platformHeight + postTop;
+            float signZ = stationHalfZ - 1.2f;
+            AddBox(new Vector3(signX, signY, signZ),
                 new Vector3(0.06f, 0.6f, 1.2f), color: new Color(0.9f, 0.85f, 0.15f));
 
             // Basic shapes cannot show the number 12 without a texture or a font, so
             // the number is drawn as three small emissive bars on the sign face.
-            BuildPlatformTwelveGlyph(new Vector3(-1.36f, platformHeight + 1.4f, stationHalfZ - 0.6f));
+            BuildPlatformTwelveGlyph(new Vector3(signX + 0.04f, signY, signZ));
 
-            _platform12Location = new Vector3(-1.4f, platformHeight + 1.0f, stationHalfZ - 0.6f);
+            _platform12Location = new Vector3(signX, signY, signZ);
         }
 
         /// <summary>
@@ -285,7 +311,6 @@ namespace Triangle.World
         private void AddGlyphBar(Material material, Vector3 position, Vector3 scale, Quaternion? rotation = null)
         {
             GameObject bar = TriangleShapes.CreateShape("GlyphBar", TriangleShapes.Cube, transform);
-            bar.transform.SetParent(transform, true);
             bar.transform.position = position;
             bar.transform.rotation = rotation ?? Quaternion.identity;
             bar.transform.localScale = scale;
@@ -316,25 +341,33 @@ namespace Triangle.World
 
         private void BuildLighting()
         {
-            // As in the bedroom, ambient is kept low so the fluorescents actually model
-            // the platforms instead of flooding everything evenly.
-            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = new Color(0.13f, 0.15f, 0.18f);
-            RenderSettings.ambientEquatorColor = new Color(0.05f, 0.055f, 0.065f);
-            RenderSettings.ambientGroundColor = new Color(0.015f, 0.016f, 0.020f);
-            RenderSettings.ambientIntensity = 0.18f;
+            // As in the bedroom, the atmosphere is declared through the owning
+            // component rather than written straight into the global render settings.
+            // The values are unchanged.
+            GameObject atmosphereObject = Track(new GameObject("StationAtmosphere"));
+            atmosphereObject.transform.SetParent(transform, false);
+
+            var atmosphere = atmosphereObject.AddComponent<TriangleEnvironmentAtmosphere>();
+            // Ambient is kept low so the fluorescents actually model the platforms
+            // instead of flooding everything evenly.
+            atmosphere.Ambient = UnityEngine.Rendering.AmbientMode.Trilight;
+            atmosphere.SkyColor = new Color(0.13f, 0.15f, 0.18f);
+            atmosphere.EquatorColor = new Color(0.05f, 0.055f, 0.065f);
+            atmosphere.GroundColor = new Color(0.015f, 0.016f, 0.020f);
+            atmosphere.Intensity = 0.18f;
+            // Fog - thicker than the bedroom; underground, no breeze.
+            atmosphere.FogEnabled = true;
+            atmosphere.Fog = FogMode.ExponentialSquared;
+            atmosphere.FogDensity = 0.045f;
+            atmosphere.FogColor = new Color(0.022f, 0.026f, 0.034f);
+            atmosphere.Apply();
 
             // Near-total darkness over the tracks.
             AddLight("TrackFill", new Vector3(0f, 1.0f, 0f), new Color(0.05f, 0.05f, 0.07f), 0.12f, 5f);
-
-            // Fog - thicker than the bedroom; underground, no breeze.
-            RenderSettings.fog = true;
-            RenderSettings.fogMode = FogMode.ExponentialSquared;
-            RenderSettings.fogDensity = 0.045f;
-            RenderSettings.fogColor = new Color(0.022f, 0.026f, 0.034f);
         }
 
-        private void AddLight(string lightName, Vector3 position, Color color, float intensity, float range)
+        private void AddLight(string lightName, Vector3 position, Color color, float intensity, float range,
+            LightShadows shadows = LightShadows.None)
         {
             GameObject lightObject = Track(new GameObject(lightName));
             lightObject.transform.SetParent(transform, true);
@@ -344,7 +377,13 @@ namespace Triangle.World
             light.color = color;
             light.intensity = intensity;
             light.range = range;
-            light.shadows = LightShadows.None;
+            light.shadows = shadows;
+            if (shadows != LightShadows.None)
+            {
+                light.shadowStrength = 0.8f;
+                light.shadowBias = 0.03f;
+                light.shadowNearPlane = 0.1f;
+            }
         }
     }
 }

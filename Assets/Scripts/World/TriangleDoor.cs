@@ -1,7 +1,7 @@
+using System;
 using Triangle.Core;
 using Triangle.Interaction;
 using Triangle.Lucidity;
-using Triangle.World;
 using UnityEngine;
 
 namespace Triangle.World
@@ -35,7 +35,7 @@ namespace Triangle.World
         public bool IsOpen => _isOpen;
 
         /// <summary>Raised when the door wants the dream to cut to the next environment.</summary>
-        public event System.Action<TriangleDoor> OnTransitionRequested;
+        public event Action<TriangleDoor> OnTransitionRequested;
 
         private void Awake()
         {
@@ -58,6 +58,14 @@ namespace Triangle.World
             _interactable.InteractionAnchor = _doorMesh;
             _interactable.MaxInteractionRange = maxInteractionRange;
             _interactable.OnInteracted += HandleInteracted;
+        }
+
+        private void OnDestroy()
+        {
+            if (_interactable != null)
+            {
+                _interactable.OnInteracted -= HandleInteracted;
+            }
         }
 
         private void HandleInteracted(TriangleInteractable interactable, GameObject interactor)
@@ -104,7 +112,7 @@ namespace Triangle.World
             }
 
             _isOpen = true;
-            float configuredDuration = float.IsNaN(swingDuration) || float.IsInfinity(swingDuration) ? 0f : swingDuration;
+            float configuredDuration = Sanitise(swingDuration);
             if (instant || configuredDuration <= 0.0001f)
             {
                 transform.rotation = _openRotation;
@@ -119,8 +127,29 @@ namespace Triangle.World
         public void Close(bool instant)
         {
             _isOpen = false;
-            _swinging = false;
-            transform.rotation = _closedRotation;
+
+            if (instant)
+            {
+                _swinging = false;
+                _swingAlpha = 0f;
+                transform.rotation = _closedRotation;
+                return;
+            }
+
+            // Swung rather than snapped. The save system only ever asks for an instant
+            // close, but the parameter used to be accepted and ignored, which made the
+            // API lie about what a non-instant close would do.
+            float configuredDuration = float.IsNaN(swingDuration) || float.IsInfinity(swingDuration) ? 0f : swingDuration;
+            if (configuredDuration <= 0.0001f)
+            {
+                _swinging = false;
+                _swingAlpha = 0f;
+                transform.rotation = _closedRotation;
+                return;
+            }
+
+            _swinging = true;
+            _swingAlpha = 1f;
         }
 
         public void RequestTransition()
@@ -153,14 +182,23 @@ namespace Triangle.World
                 return;
             }
 
-            float safeDuration = Mathf.Max(0.0001f, float.IsNaN(swingDuration) ? 0f : swingDuration);
-            _swingAlpha = Mathf.Min(1f, _swingAlpha + Time.deltaTime / safeDuration);
+            // Guarded against zero and infinity: both are legal outcomes of a
+            // hand-edited inspector, and used as a divisor here. An infinite
+            // swingDuration made the door freeze half open forever.
+            float safeDuration = Mathf.Max(0.0001f, Sanitise(swingDuration));
+            _swingAlpha = Mathf.MoveTowards(_swingAlpha, 1f, Time.deltaTime / safeDuration);
             transform.rotation = Quaternion.Slerp(_closedRotation, _openRotation, _swingAlpha);
 
             if (_swingAlpha >= 1f)
             {
                 _swinging = false;
+                transform.rotation = _openRotation;
             }
+        }
+
+        private static float Sanitise(float value)
+        {
+            return float.IsNaN(value) || float.IsInfinity(value) ? 0f : value;
         }
     }
 }

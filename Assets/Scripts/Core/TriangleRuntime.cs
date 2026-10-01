@@ -3,6 +3,7 @@ using Triangle.Dream;
 using Triangle.Nightmare;
 using Triangle.Save;
 using Triangle.UI;
+using UnityEngine;
 
 namespace Triangle.Core
 {
@@ -29,6 +30,26 @@ namespace Triangle.Core
         public static TriangleScheduler Scheduler;
 
         public static bool HasPlayer => Player != null;
+
+        /// <summary>
+        /// Clears the locator before the first scene loads.
+        ///
+        /// A static field survives "Enter Play Mode Options" with domain reload turned
+        /// off, which is the default for anyone who ticks that box. The previous
+        /// session's Player, Director and GameFlow would then still be referenced here
+        /// while their Unity objects had been destroyed, and the first system to read
+        /// the locator in that window would be holding a dead reference that still
+        /// compares non-null in a plain C# sense.
+        ///
+        /// SubsystemRegistration is the documented hook for this: it runs after
+        /// assemblies are loaded but before any Awake, so nothing has had a chance to
+        /// read a stale entry yet.
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetOnLoad()
+        {
+            Reset();
+        }
 
         public static void Reset()
         {
