@@ -7,6 +7,7 @@ using Triangle.Player;
 using Triangle.Save;
 using Triangle.UI;
 using Triangle.World;
+using UnityEngine.Rendering.Universal;
 using UnityEngine;
 
 namespace Triangle.Core
@@ -139,6 +140,7 @@ namespace Triangle.Core
             ApplyFramePacing();
 
             RegisterServices();
+            CreatePostProcessing();
             CreatePlayer();
             CreateHud();
             CreateDirector();
@@ -192,6 +194,11 @@ namespace Triangle.Core
             {
                 TriangleLog.Error($"GameFlow could not assemble the {TriangleGameFlow.IdFor(start)}.");
             }
+
+            // The pawn built its camera in Awake, so it exists by now and can be given its
+            // render pipeline settings. Doing this here rather than in the pawn keeps the
+            // pipeline knowledge in one place.
+            ConfigureCamera(TriangleRuntime.Player?.Camera);
 
             TriangleRuntime.Director?.InitializeDream();
             TriangleRuntime.Hud?.BindToPlayer(TriangleRuntime.Player);
@@ -334,6 +341,73 @@ namespace Triangle.Core
             var directorObject = new GameObject("DreamDirector");
             directorObject.transform.SetParent(transform, false);
             TriangleRuntime.Director = directorObject.AddComponent<TriangleDreamDirector>();
+        }
+
+        /// <summary>
+        /// Brings the render pipeline's post-processing online.
+        ///
+        /// Created here rather than as a scene object so the playable scene keeps containing
+        /// only the bootstrap, which is the constraint the whole code-driven architecture
+        /// rests on.
+        ///
+        /// Before this existed the frame was raw linear radiance written straight to the
+        /// screen. On a palette of near-black blue-grey surfaces that reads as flat and
+        /// chalky, and no amount of lighting or texture work fully compensates - the
+        /// tonemapping curve and the bloom are not polish here, they are what makes the
+        /// image legible at all.
+        /// </summary>
+        private void CreatePostProcessing()
+        {
+            var postObject = new GameObject("TrianglePostProcessing");
+            postObject.transform.SetParent(transform, false);
+            postObject.AddComponent<Triangle.Render.TrianglePostProcessing>();
+        }
+
+        /// <summary>
+        /// Configures the pawn's camera for the render pipeline.
+        ///
+        /// URP stores anti-aliasing and the post-processing flag on
+        /// <c>UniversalAdditionalCameraData</c> rather than on the Camera, and the pawn
+        /// builds its camera at runtime with AddComponent, so nothing ever gives it one.
+        /// Without it the camera falls back to defaults - and because
+        /// <c>renderPostProcessing</c> defaults off on a runtime-created camera, the entire
+        /// volume stack is silently discarded while the volume itself still reports that it
+        /// is active.
+        /// </summary>
+        private static void ConfigureCamera(Camera camera)
+        {
+            if (camera == null)
+            {
+                return;
+            }
+
+            // Returns the existing data component or creates one, which is exactly what a
+            // camera built in code needs.
+            UniversalAdditionalCameraData data = camera.GetUniversalAdditionalCameraData();
+            if (data == null)
+            {
+                TriangleLog.Warn("The pawn's camera has no Universal camera data; " +
+                                 "post-processing and anti-aliasing are unavailable.");
+                return;
+            }
+
+            // SMAA rather than FXAA. FXAA blurs across depth edges, which softens exactly the
+            // hard box corners this scene is made of; SMAA is morphological and keeps them.
+            data.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
+            data.antialiasingQuality = AntialiasingQuality.High;
+
+            // Read the post stack from the global volume rather than from a camera profile.
+            data.renderPostProcessing = true;
+
+            // The opaque and depth textures are read by post effects and by screen-space
+            // occlusion. Requested per camera so the camera is self-describing rather than
+            // depending on a global default that could be changed elsewhere.
+            data.requiresColorOption = CameraOverrideOption.On;
+            data.requiresDepthOption = CameraOverrideOption.On;
+
+            // No camera stacking. There is one camera, and stacking exists to serve an
+            // overlay camera this game does not have; cameraStack is read-only anyway,
+            // since URP builds it from the cameras' own render type at runtime.
         }
 
         private void OnDestroy()

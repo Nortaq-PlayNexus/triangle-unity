@@ -33,6 +33,10 @@ namespace Triangle.Core
         private const string KeyMouseSmoothing = "Triangle.MouseSmoothing";
         private const string KeyMusicVolume = "Triangle.MusicVolume";
         private const string KeyHumVolume = "Triangle.HumVolume";
+        private const string KeyFilmGrain = "Triangle.FilmGrain";
+        private const string KeyChromaticAberration = "Triangle.ChromaticAberration";
+        private const string KeyMotionBlur = "Triangle.MotionBlur";
+        private const string KeyBloom = "Triangle.Bloom";
 
         /// <summary>Raised when any setting changes, so listeners can re-apply.</summary>
         public static event Action OnSettingsChanged;
@@ -120,6 +124,66 @@ namespace Triangle.Core
             set => WriteFloat(KeyHumVolume, value, MinVolume, MaxVolume);
         }
 
+        /// <summary>
+        /// Scales the post-processing film grain, 0 to 1.
+        ///
+        /// Grain is the most commonly reported trigger for visual discomfort, and this game
+        /// is almost entirely dark low-contrast imagery - exactly the content where grain is
+        /// most visible and least welcome. A separate control rather than part of a single
+        /// "effects" slider because it is the one players ask for by name.
+        ///
+        /// Defaults to full rather than off. The grain also breaks up banding in the large
+        /// flat gradients this palette produces, so removing it entirely makes the image
+        /// worse for everyone, and a control that reaches zero is still available.
+        /// </summary>
+        public static float FilmGrain
+        {
+            get => ReadFloat(KeyFilmGrain, 1f, MinVolume, MaxVolume);
+            set => WriteFloat(KeyFilmGrain, value, MinVolume, MaxVolume);
+        }
+
+        /// <summary>
+        /// Scales the lens chromatic aberration, 0 to 1.
+        ///
+        /// Separately adjustable from grain because it is a different kind of problem: it
+        /// displaces colour channels relative to each other, which some people find
+        /// genuinely disorienting and which a flash or a strobing light can amplify. It is
+        /// the one effect here that should default lower.
+        /// </summary>
+        public static float ChromaticAberration
+        {
+            get => ReadFloat(KeyChromaticAberration, 0.35f, MinVolume, MaxVolume);
+            set => WriteFloat(KeyChromaticAberration, value, MinVolume, MaxVolume);
+        }
+
+        /// <summary>
+        /// Scales camera motion blur, 0 to 1.
+        ///
+        /// Blur is a third distinct discomfort category - it provokes motion sickness rather
+        /// than eye strain - so it does not share a control with either of the others. Held
+        /// low by default for the same reason head bob is: the game already leans on camera
+        /// motion for its effect, and adding blur on top compounds it.
+        /// </summary>
+        public static float MotionBlur
+        {
+            get => ReadFloat(KeyMotionBlur, 0.5f, MinVolume, MaxVolume);
+            set => WriteFloat(KeyMotionBlur, value, MinVolume, MaxVolume);
+        }
+
+        /// <summary>
+        /// Scales bloom, 0 to 1.
+        ///
+        /// Not primarily a comfort control: bloom is what makes the window and the
+        /// fluorescent tubes read as light sources, so turning it off costs a real part of
+        /// the image. It is exposed because the pulsing bloom some players describe during
+        /// the presence ramps is this effect, and they should be able to remove it.
+        /// </summary>
+        public static float Bloom
+        {
+            get => ReadFloat(KeyBloom, 1f, MinVolume, MaxVolume);
+            set => WriteFloat(KeyBloom, value, MinVolume, MaxVolume);
+        }
+
         /// <summary>Restores every setting to its shipped default.</summary>
         public static void ResetToDefaults()
         {
@@ -133,6 +197,10 @@ namespace Triangle.Core
             PlayerPrefs.DeleteKey(KeyMouseSmoothing);
             PlayerPrefs.DeleteKey(KeyMusicVolume);
             PlayerPrefs.DeleteKey(KeyHumVolume);
+            PlayerPrefs.DeleteKey(KeyFilmGrain);
+            PlayerPrefs.DeleteKey(KeyChromaticAberration);
+            PlayerPrefs.DeleteKey(KeyMotionBlur);
+            PlayerPrefs.DeleteKey(KeyBloom);
             PlayerPrefs.Save();
             OnSettingsChanged?.Invoke();
         }

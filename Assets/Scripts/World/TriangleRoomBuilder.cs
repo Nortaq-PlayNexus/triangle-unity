@@ -73,6 +73,7 @@ namespace Triangle.World
             _cornerLocation = new Vector3(roomHalfX * 0.95f, roomHeight * 0.97f, -roomHalfZ * 0.97f);
 
             BuildShell();
+            BuildTrim();
             BuildWindow();
             BuildBed();
             BuildDesk();
@@ -81,6 +82,7 @@ namespace Triangle.World
             BuildDoor();
             BuildCornerPoint();
             BuildLighting();
+            BuildProbes();
 
             // The player spawns centred in the room, facing the window-lit back wall
             // so the first thing on screen reads as a moonlit bedroom.
@@ -108,6 +110,32 @@ namespace Triangle.World
 
             _spawned.Clear();
             _dreamStart = null;
+
+            // The cookies are Texture2D objects, not scene objects, so destroying the
+            // lights that reference them does not reclaim them. Every room rebuild would
+            // otherwise leak four more of them.
+            DestroyCookie(ref _windowCookie);
+        }
+
+        private Texture2D _windowCookie;
+
+        private void DestroyCookie(ref Texture2D cookie)
+        {
+            if (cookie == null)
+            {
+                return;
+            }
+
+            if (Application.isPlaying)
+            {
+                Destroy(cookie);
+            }
+            else
+            {
+                DestroyImmediate(cookie);
+            }
+
+            cookie = null;
         }
 
         private GameObject Track(GameObject go)
@@ -116,15 +144,21 @@ namespace Triangle.World
             return go;
         }
 
-        /// <summary>Spawns a plain box and records it for teardown. Position is in metres.</summary>
+        /// <summary>
+        /// Spawns a box with softened edges and records it for teardown. Position in metres.
+        /// </summary>
+        /// <remarks>
+        /// Uses the bevel mesh rather than Unity's cube. A hard-edged box has twelve 90-degree
+        /// arrises, and under any lighting a hard edge produces exactly one bright specular
+        /// line or nothing at all - so a perfect cube reads as untextured geometry no matter
+        /// what material is on it. Real plaster, painted timber and skirting are all slightly
+        /// rounded at the arris, and the bevel reproduces that. The collider stays a plain
+        /// box so the player's movement is unaffected.
+        /// </remarks>
         private GameObject AddBox(Vector3 position, Vector3 scale, Quaternion? rotation = null, Color? color = null,
             TriangleProceduralTextures.SurfaceKind? surface = null, float tiling = 1f)
         {
-            // CreateShape already parents to this transform with worldPositionStays
-            // false; reparenting again with worldPositionStays true only added a
-            // redundant transform write per piece. The builder sits at the origin with
-            // an identity rotation, so world and local placement coincide here.
-            GameObject box = TriangleShapes.CreateShape("RoomPiece", TriangleShapes.Cube, transform);
+            GameObject box = TriangleShapes.CreateShape("RoomPiece", TriangleShapes.BevelBoxMesh, transform);
             box.transform.position = position;
             box.transform.rotation = rotation ?? Quaternion.identity;
             box.transform.localScale = scale;
@@ -135,6 +169,43 @@ namespace Triangle.World
 
             var collider = box.AddComponent<BoxCollider>();
             collider.size = Vector3.one;
+            return box;
+        }
+
+        /// <summary>
+        /// Spawns a box with an explicit smoothness, for surfaces that need a specific
+        /// response rather than the shared material for their colour.
+        /// </summary>
+        private GameObject AddSculptedBox(Vector3 position, Vector3 scale, Color color, float smoothness,
+            TriangleProceduralTextures.SurfaceKind? surface = null, float tiling = 1f,
+            Quaternion? rotation = null)
+        {
+            GameObject box = AddBox(position, scale, rotation, color, surface, tiling);
+            box.GetComponent<MeshRenderer>().sharedMaterial =
+                TriangleShapes.GetSmoothMaterial(color, smoothness);
+            return box;
+        }
+
+        /// <summary>
+        /// Spawns a decorative box with no collider.
+        ///
+        /// Thin trim, reveals and mullions carry colliders that do nothing but inflate the
+        /// interaction overlap set the player scans every 0.08 seconds. They are flush with
+        /// a surface the player cannot pass through anyway.
+        /// </summary>
+        private GameObject AddTrim(Vector3 position, Vector3 scale, Color color,
+            TriangleProceduralTextures.SurfaceKind? surface = null, float tiling = 1f,
+            Quaternion? rotation = null, float smoothness = 0.28f)
+        {
+            GameObject box = AddBox(position, scale, rotation, color, surface, tiling);
+            box.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetSmoothMaterial(color, smoothness);
+
+            BoxCollider collider = box.GetComponent<BoxCollider>();
+            if (collider != null)
+            {
+                collider.enabled = false;
+            }
+
             return box;
         }
 
@@ -174,6 +245,99 @@ namespace Triangle.World
                 color: WallColor, surface: TriangleProceduralTextures.SurfaceKind.Plaster, tiling: 0.8f);
         }
 
+        /// <summary>
+        /// Skirting boards, a picture rail and a door casing.
+        ///
+        /// None of this is decoration in the sense of being optional. A plain plastered box
+        /// has no scale and no horizontal reference, so the eye cannot tell how big the room
+        /// is - and a bedroom with a skirting board and a rail is instantly readable as a
+        /// room of a particular size, because those are the two things every real interior
+        /// has and every untextured box lacks.
+        ///
+        /// Cheap: a few dozen triangles each, no textures beyond the shared plaster set.
+        /// </summary>
+        private void BuildTrim()
+        {
+            const float skirtingHeight = 0.14f;
+            const float skirtingDepth = 0.022f;
+            const float railHeight = 2.24f;
+            const float railDepth = 0.018f;
+
+            var trimColor = new Color(0.165f, 0.150f, 0.135f);
+            float innerX = roomHalfX - WallThickness * 0.5f;
+            float innerZ = roomHalfZ - WallThickness * 0.5f;
+
+            // Skirting on all four walls, inset into each corner so the runs meet rather
+            // than interpenetrating - two overlapping boxes at a corner z-fight and produce
+            // a flickering seam exactly where the eye looks for one.
+            AddTrim(new Vector3(0f, skirtingHeight * 0.5f, -innerZ + skirtingDepth * 0.5f),
+                new Vector3(roomHalfX * 2f - WallThickness, skirtingHeight, skirtingDepth), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.6f);
+
+            AddTrim(new Vector3(0f, skirtingHeight * 0.5f, innerZ - skirtingDepth * 0.5f),
+                new Vector3(roomHalfX * 2f - WallThickness, skirtingHeight, skirtingDepth), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.6f);
+
+            AddTrim(new Vector3(-innerX + skirtingDepth * 0.5f, skirtingHeight * 0.5f, 0f),
+                new Vector3(skirtingDepth, skirtingHeight, roomHalfZ * 2f - WallThickness), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.6f);
+
+            AddTrim(new Vector3(innerX - skirtingDepth * 0.5f, skirtingHeight * 0.5f, 0f),
+                new Vector3(skirtingDepth, skirtingHeight, roomHalfZ * 2f - WallThickness), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.6f);
+
+            // Picture rail on the two side walls and the back wall. Not on the front: the
+            // door casing occupies that wall and a rail cutting through a door head is the
+            // kind of small wrongness this game is about.
+            AddTrim(new Vector3(0f, railHeight, -innerZ + railDepth * 0.5f),
+                new Vector3(roomHalfX * 2f - WallThickness, 0.05f, railDepth), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.2f, null, 0.32f);
+
+            AddTrim(new Vector3(-innerX + railDepth * 0.5f, railHeight, 0f),
+                new Vector3(railDepth, 0.05f, roomHalfZ * 2f - WallThickness), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.2f, null, 0.32f);
+
+            AddTrim(new Vector3(innerX - railDepth * 0.5f, railHeight, 0f),
+                new Vector3(railDepth, 0.05f, roomHalfZ * 2f - WallThickness), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.2f, null, 0.32f);
+
+            // Door casing: a lining around the opening plus a moulded architrave on the room
+            // side. The opening is a raw gap in a box in every version so far, and a doorway
+            // with no casing is the clearest "this is a hole in a wall" tell there is.
+            float casingX = (DoorGapMinX + DoorGapMaxX) * 0.5f;
+            float casingZ = innerZ;
+            float gapWidth = DoorGapMaxX - DoorGapMinX;
+
+            // Lining inside the reveal.
+            AddTrim(new Vector3(DoorGapMinX, DoorGapHeight * 0.5f, casingZ),
+                new Vector3(0.03f, DoorGapHeight, WallThickness), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.4f, null, 0.24f);
+
+            AddTrim(new Vector3(DoorGapMaxX, DoorGapHeight * 0.5f, casingZ),
+                new Vector3(0.03f, DoorGapHeight, WallThickness), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.4f, null, 0.24f);
+
+            AddTrim(new Vector3(casingX, DoorGapHeight, casingZ),
+                new Vector3(gapWidth, 0.03f, WallThickness), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.4f, null, 0.24f);
+
+            // Architrave, proud of the wall face.
+            const float architraveWidth = 0.07f;
+            float architraveZ = innerZ + architraveWidth * 0.5f;
+
+            AddTrim(new Vector3(DoorGapMinX - architraveWidth * 0.5f, DoorGapHeight * 0.5f, architraveZ),
+                new Vector3(architraveWidth, DoorGapHeight + architraveWidth, 0.02f), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.8f, null, 0.34f);
+
+            AddTrim(new Vector3(DoorGapMaxX + architraveWidth * 0.5f, DoorGapHeight * 0.5f, architraveZ),
+                new Vector3(architraveWidth, DoorGapHeight + architraveWidth, 0.02f), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.8f, null, 0.34f);
+
+            AddTrim(new Vector3(casingX, DoorGapHeight + architraveWidth * 0.5f, architraveZ),
+                new Vector3(gapWidth + architraveWidth * 2f, architraveWidth, 0.02f), trimColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 1.8f, null, 0.34f);
+        }
+
         private void BuildWindow()
         {
             // A pale panel on the back wall that reads as moonlight. This is the room's
@@ -186,21 +350,66 @@ namespace Triangle.World
             // plaster. The frame, pane and mullion are layered in front of the wall face.
             float wallFace = -roomHalfZ + WallThickness * 0.5f;
 
-            GameObject frame = AddBox(new Vector3(0f, 1.55f, wallFace + 0.01f), new Vector3(1.42f, 1.66f, 0.04f));
-            frame.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.09f, 0.08f, 0.07f));
-            frame.GetComponent<BoxCollider>().enabled = false;
+            // The reveal: the sides and head of the opening, set back into the wall. Without
+            // it the pane is a rectangle floating a centimetre off a flat wall, which is why
+            // the window has read as a light panel rather than as an opening in every build.
+            // The reveal also gives the key light something to graze, which is where the
+            // window's depth cue comes from.
+            const float paneWidth = 1.10f;
+            const float paneHeight = 1.34f;
+            const float windowCentreY = 1.55f;
+            const float revealDepth = 0.10f;
+            var frameColor = new Color(0.115f, 0.105f, 0.092f);
 
-            // The pane is the only bright surface in the room and its visual anchor, so
-            // it is emissive rather than merely lit.
-            GameObject window = AddBox(new Vector3(0f, 1.55f, wallFace + 0.045f), new Vector3(1.10f, 1.34f, 0.05f));
+            float revealZ = wallFace + revealDepth * 0.5f;
+
+            AddTrim(new Vector3(0f, windowCentreY - paneHeight * 0.5f - 0.03f, revealZ),
+                new Vector3(paneWidth + 0.06f, 0.06f, revealDepth), frameColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 2f, null, 0.22f);
+
+            AddTrim(new Vector3(0f, windowCentreY + paneHeight * 0.5f + 0.03f, revealZ),
+                new Vector3(paneWidth + 0.06f, 0.06f, revealDepth), frameColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 2f, null, 0.22f);
+
+            AddTrim(new Vector3(-paneWidth * 0.5f - 0.03f, windowCentreY, revealZ),
+                new Vector3(0.06f, paneHeight + 0.12f, revealDepth), frameColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 2f, null, 0.22f);
+
+            AddTrim(new Vector3(paneWidth * 0.5f + 0.03f, windowCentreY, revealZ),
+                new Vector3(0.06f, paneHeight + 0.12f, revealDepth), frameColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 2f, null, 0.22f);
+
+            // Sill, projecting into the room and below the opening. This is what catches the
+            // moonlight and gives the brightest thing in the room a hard edge to cast a
+            // shadow from.
+            AddTrim(new Vector3(0f, windowCentreY - paneHeight * 0.5f - 0.055f, wallFace + 0.055f),
+                new Vector3(paneWidth + 0.20f, 0.035f, 0.14f), frameColor,
+                TriangleProceduralTextures.SurfaceKind.Wood, 2f, null, 0.26f);
+
+            // The pane itself, set back inside the reveal so the frame shadows it.
+            //
+            // Emissive at 3.2 rather than 2.2. It is now the only real light source in the
+            // room and bloom is enabled, so it needs to be well above 1.0 to read as a source
+            // rather than as a pale panel - and the previous value sat just above the bloom
+            // threshold of nothing at all.
+            //
+            // Built through AddBox rather than AddTrim, because the interaction finder
+            // searches colliders only and this pane carries the MoonWrongSide inspectable.
+            // A collider-free pane makes it unreachable no matter where the player stands,
+            // which is a progression bug rather than a graphics one.
+            GameObject window = AddBox(new Vector3(0f, windowCentreY, wallFace + 0.035f),
+                new Vector3(paneWidth, paneHeight, 0.02f), null, Color.white);
             window.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetEmissiveMaterial(
-                new Color(0.60f, 0.72f, 0.98f), 2.2f);
-            window.GetComponent<BoxCollider>().enabled = false;
+                new Color(0.58f, 0.70f, 0.96f), 3.2f);
 
-            // A mullion across the middle, so it reads as a window rather than a light.
-            GameObject mullion = AddBox(new Vector3(0f, 1.55f, wallFace + 0.08f), new Vector3(1.14f, 0.055f, 0.05f));
-            mullion.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.09f, 0.08f, 0.07f));
-            mullion.GetComponent<BoxCollider>().enabled = false;
+            // Glazing bars. A window is not one pane, and the bars are what give the
+            // emissive rectangle internal structure - without them a bright rectangle is a
+            // light panel however high its emission is.
+            AddTrim(new Vector3(0f, windowCentreY, wallFace + 0.05f),
+                new Vector3(paneWidth + 0.04f, 0.035f, 0.02f), frameColor, null, 1f, null, 0.24f);
+
+            AddTrim(new Vector3(0f, windowCentreY, wallFace + 0.05f),
+                new Vector3(0.035f, paneHeight + 0.04f, 0.02f), frameColor, null, 1f, null, 0.24f);
 
             // The window is examinable. "The moon is on the wrong side of the window" is
             // already one of the false-awakening difference lines, so the player meets the
@@ -220,19 +429,105 @@ namespace Triangle.World
 
         private void BuildBed()
         {
-            // Frame, mattress and pillow reads as a bed in the dark.
-            GameObject frame = AddBox(new Vector3(-2.2f, 0.15f, 1.5f), new Vector3(1.0f, 0.3f, 2.0f),
-                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.4f);
-            AddBox(new Vector3(-2.2f, 0.42f, 1.5f), new Vector3(0.95f, 0.12f, 1.9f),
-                color: MattressColor, surface: TriangleProceduralTextures.SurfaceKind.Fabric, tiling: 2.2f);
-            AddBox(new Vector3(-2.32f, 0.53f, 0.6f), new Vector3(0.7f, 0.10f, 0.45f),
-                color: LinenColor, surface: TriangleProceduralTextures.SurfaceKind.Fabric, tiling: 3.0f);
-            // Headboard.
-            AddBox(new Vector3(-2.2f, 0.55f, 2.52f), new Vector3(1.0f, 0.75f, 0.12f),
+            // A bed is a frame with legs, a mattress sitting inside it, a headboard, a
+            // pillow and a folded sheet. The previous version was four floating slabs, which
+            // is enough to place the object in a room and not enough for the eye to confirm
+            // it is a bed - and this room is a bedroom, so this is the one prop that has to
+            // read.
+            const float bedX = -2.2f;
+            const float bedZ = 1.5f;
+            const float frameWidth = 1.0f;
+            const float frameLength = 2.0f;
+            const float legHeight = 0.22f;
+
+            // Legs, inset from the corners the way a real frame is.
+            const float legInset = 0.09f;
+            for (int i = 0; i < 4; i++)
+            {
+                float sx = (i & 1) == 0 ? -1f : 1f;
+                float sz = (i & 2) == 0 ? -1f : 1f;
+                AddBox(new Vector3(
+                        bedX + sx * (frameWidth * 0.5f - legInset),
+                        legHeight * 0.5f,
+                        bedZ + sz * (frameLength * 0.5f - legInset)),
+                    new Vector3(0.07f, legHeight, 0.07f),
+                    color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 3f);
+            }
+
+            // Rails on all four sides, so the frame has thickness rather than being a slab.
+            float railThickness = 0.06f;
+            float railCentreY = legHeight + 0.05f;
+
+            AddBox(new Vector3(bedX, railCentreY, bedZ - frameLength * 0.5f + railThickness * 0.5f),
+                new Vector3(frameWidth, 0.10f, railThickness),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.6f);
+
+            AddBox(new Vector3(bedX, railCentreY, bedZ + frameLength * 0.5f - railThickness * 0.5f),
+                new Vector3(frameWidth, 0.10f, railThickness),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.6f);
+
+            AddBox(new Vector3(bedX - frameWidth * 0.5f + railThickness * 0.5f, railCentreY, bedZ),
+                new Vector3(railThickness, 0.10f, frameLength),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.6f);
+
+            AddBox(new Vector3(bedX + frameWidth * 0.5f - railThickness * 0.5f, railCentreY, bedZ),
+                new Vector3(railThickness, 0.10f, frameLength),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.6f);
+
+            // The base the mattress sits on, inside the rails. Lower than the rails so the
+            // mattress sits below their top edge, which is what gives the frame a lip.
+            // Named bedBase: "base" is a contextual keyword in C# and cannot be used as an
+            // identifier here.
+            GameObject bedBase = AddBox(new Vector3(bedX, legHeight + 0.06f, bedZ),
+                new Vector3(frameWidth - railThickness * 2f, 0.05f, frameLength - railThickness * 2f),
                 color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.4f);
 
+            // Mattress, slightly proud of the frame so it overhangs a little.
+            AddSculptedBox(new Vector3(bedX, legHeight + 0.15f, bedZ),
+                new Vector3(frameWidth - railThickness, 0.14f, frameLength - railThickness),
+                MattressColor, 0.10f, TriangleProceduralTextures.SurfaceKind.Fabric, 2.2f);
+
+            // Pillow, at the head end and slightly askew - a straight pillow reads as a box.
+            AddSculptedBox(new Vector3(bedX - 0.04f, legHeight + 0.26f, bedZ - frameLength * 0.5f + 0.34f),
+                new Vector3(0.62f, 0.11f, 0.40f),
+                LinenColor, 0.13f, TriangleProceduralTextures.SurfaceKind.Fabric, 3.0f,
+                Quaternion.Euler(0f, 7f, 0f));
+
+            // A folded sheet across the foot, one step lighter than the mattress so the bed
+            // has two tones instead of one.
+            AddSculptedBox(new Vector3(bedX, legHeight + 0.24f, bedZ + frameLength * 0.5f - 0.52f),
+                new Vector3(frameWidth - railThickness + 0.03f, 0.05f, 0.62f),
+                new Color(0.315f, 0.310f, 0.318f), 0.12f, TriangleProceduralTextures.SurfaceKind.Fabric, 2.6f);
+
+            // Headboard: two uprights, a panel between them and a capping rail. Built as
+            // separate pieces rather than one slab because the gaps between the uprights are
+            // what make it read as a bed frame instead of a wall.
+            const float headboardZ = 2.52f;
+            const float headboardHeight = 0.78f;
+
+            AddBox(new Vector3(bedX - frameWidth * 0.5f + 0.05f, headboardHeight * 0.5f, headboardZ),
+                new Vector3(0.09f, headboardHeight, 0.07f),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 2.4f);
+
+            AddBox(new Vector3(bedX + frameWidth * 0.5f - 0.05f, headboardHeight * 0.5f, headboardZ),
+                new Vector3(0.09f, headboardHeight, 0.07f),
+                color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 2.4f);
+
+            AddTrim(new Vector3(bedX, headboardHeight * 0.42f, headboardZ),
+                new Vector3(frameWidth - 0.14f, headboardHeight * 0.7f, 0.04f),
+                new Color(0.140f, 0.106f, 0.078f),
+                TriangleProceduralTextures.SurfaceKind.Fabric, 2.8f, null, 0.14f);
+
+            // Capping rail over the top, proud of both uprights.
+            AddTrim(new Vector3(bedX, headboardHeight + 0.03f, headboardZ),
+                new Vector3(frameWidth + 0.06f, 0.06f, 0.09f),
+                WoodColor, TriangleProceduralTextures.SurfaceKind.Wood, 2f, null, 0.34f);
+
             // "You are still ten years old" is another false-awakening difference line.
-            var bedInspectable = frame.AddComponent<TriangleInspectable>();
+            //
+            // Attached to the base rather than the frame slab, so the prompt has a collider
+            // to find: the interaction finder searches colliders only.
+            var bedInspectable = bedBase.AddComponent<TriangleInspectable>();
             bedInspectable.Configure(
                 "Bed",
                 "You are still ten years old.",
@@ -242,8 +537,102 @@ namespace Triangle.World
 
         private void BuildDesk()
         {
-            AddBox(new Vector3(2.0f, 0.55f, -0.8f), new Vector3(0.6f, 0.7f, 1.2f),
+            // A desk is a top, a carcass and drawers with handles. The previous version was
+            // one solid 0.6 x 0.7 x 1.2 block, which read as a crate.
+            const float deskX = 2.0f;
+            const float deskZ = -0.8f;
+            const float deskTop = 0.74f;
+            const float deskWidth = 1.1f;
+            const float deskDepth = 0.55f;
+            const float carcassHeight = 0.62f;
+
+            // Top, overhanging on three sides the way a real desk does.
+            AddTrim(new Vector3(deskX, deskTop, deskZ),
+                new Vector3(deskWidth + 0.05f, 0.035f, deskDepth + 0.05f),
+                WoodColor, TriangleProceduralTextures.SurfaceKind.Wood, 1.4f, null, 0.32f);
+
+            // Carcass below it.
+            AddBox(new Vector3(deskX, carcassHeight * 0.5f, deskZ),
+                new Vector3(deskWidth, carcassHeight, deskDepth),
                 color: WoodColor, surface: TriangleProceduralTextures.SurfaceKind.Wood, tiling: 1.2f);
+
+            // Two drawer fronts with a gap between them, plus a handle each. The gap and the
+            // handles are what make it a desk rather than a cabinet, and they are almost free.
+            const float drawerHeight = 0.20f;
+            var handleColor = new Color(0.30f, 0.27f, 0.22f);
+
+            for (int i = 0; i < 2; i++)
+            {
+                float y = 0.14f + i * (drawerHeight + 0.03f);
+                float z = deskZ + deskDepth * 0.5f + 0.008f;
+
+                AddTrim(new Vector3(deskX, y, z),
+                    new Vector3(deskWidth - 0.06f, drawerHeight, 0.016f),
+                    new Color(0.148f, 0.112f, 0.082f),
+                    TriangleProceduralTextures.SurfaceKind.Wood, 1.8f, null, 0.30f);
+
+                AddTrim(new Vector3(deskX, y, z + 0.022f),
+                    new Vector3(0.16f, 0.022f, 0.028f), handleColor, null, 1f, null, 0.52f);
+            }
+
+            // A lamp. A small emissive sphere on a stem, and the only warm light in the
+            // room - which is what makes the moonlight read as cold by contrast.
+            BuildDeskLamp(deskX, deskTop, deskZ - 0.08f);
+        }
+
+        /// <summary>
+        /// A small warm lamp on the desk.
+        ///
+        /// Its purpose is contrast rather than illumination. Every other light in this room
+        /// is cold blue; a single warm source at low intensity is what gives the moonlight
+        /// its coldness by comparison, and it puts a warm highlight on the desk top that
+        /// gives the wood surface a readable gloss.
+        /// </summary>
+        private void BuildDeskLamp(float x, float deskTopY, float z)
+        {
+            const float shadeHeight = 0.16f;
+            float baseY = deskTopY + 0.017f;
+
+            // Base and stem.
+            AddTrim(new Vector3(x, baseY + 0.012f, z), new Vector3(0.13f, 0.024f, 0.13f),
+                new Color(0.115f, 0.105f, 0.095f), null, 1f, null, 0.45f);
+
+            AddTrim(new Vector3(x, baseY + 0.09f, z), new Vector3(0.022f, 0.13f, 0.022f),
+                new Color(0.115f, 0.105f, 0.095f), null, 1f, null, 0.45f);
+
+            // Shade, as a downward-facing cone shell. Cone rather than a cylinder so it reads
+            // as a lampshade's taper, and unlit-emissive at low intensity so it glows without
+            // needing to be a light source itself.
+            GameObject shade = TriangleShapes.CreateShape("LampShade", TriangleShapes.ConeMesh, transform);
+            shade.transform.position = new Vector3(x, baseY + 0.16f + shadeHeight * 0.5f, z);
+            shade.transform.localScale = new Vector3(0.20f, shadeHeight * 1.6f, 0.20f);
+            shade.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetEmissiveMaterial(
+                new Color(0.98f, 0.80f, 0.52f), 0.9f);
+            Track(shade);
+
+            // The bulb, so the shade is lit from inside rather than glowing uniformly.
+            GameObject bulb = TriangleShapes.CreateShape("LampBulb", TriangleShapes.Sphere, transform);
+            bulb.transform.position = new Vector3(x, baseY + 0.17f, z);
+            bulb.transform.localScale = Vector3.one * 0.075f;
+            bulb.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetEmissiveMaterial(
+                new Color(1f, 0.88f, 0.68f), 6f);
+            bulb.GetComponent<MeshRenderer>().shadowCastingMode =
+                UnityEngine.Rendering.ShadowCastingMode.Off;
+            Track(bulb);
+
+            // A dim, warm point light so the lamp actually contributes. Low intensity and a
+            // short range: this is a bedside reading lamp, not a second key light, and letting
+            // it brighten the room would flatten the moonlight.
+            var lampObject = Track(new GameObject("DeskLampLight"));
+            lampObject.transform.SetParent(transform, false);
+
+            Light lamp = TriangleLighting.Create(lampObject, LightType.Point,
+                new Color(1f, 0.84f, 0.60f), 0.42f, 2.6f,
+                new Vector3(x, baseY + 0.17f, z), TriangleLighting.LayerAccent);
+
+            // A radial cookie so the pool of light has a soft edge instead of stopping at a
+            // hard sphere boundary.
+            lamp.cookie = TriangleLighting.RadialCookie(128, 0.85f, 1.15f);
         }
 
         private void BuildClock()
@@ -258,32 +647,88 @@ namespace Triangle.World
             const float clockRadius = 0.13f;
             const float clockDepth = 0.02f;
             float wallFaceX = roomHalfX - WallThickness * 0.5f;
+            const float clockY = 2.05f;
+            const float clockZ = -0.8f;
+            var caseColor = new Color(0.165f, 0.142f, 0.108f);
+            var faceColor = new Color(0.330f, 0.320f, 0.300f);
+            var handColor = new Color(0.62f, 0.58f, 0.50f);
+
+            // The case, set back into a shallow recess so it reads as mounted rather than
+            // stuck on. The recess is what stops the clock reading as a disc floating a
+            // centimetre off a flat wall, which is how it has looked in every build so far.
+            AddTrim(new Vector3(wallFaceX + 0.012f, clockY, clockZ),
+                new Vector3(0.024f, clockRadius * 2.4f, clockRadius * 2.4f),
+                new Color(0.098f, 0.092f, 0.086f), null, 1f, null, 0.20f);
 
             GameObject clock = TriangleShapes.CreateShape("Clock", TriangleShapes.Cylinder, transform);
             clock.transform.SetParent(transform, true);
-            // Unity's cylinder runs along Y; rotate it so the disc faces into the room.
-            clock.transform.rotation = Quaternion.Euler(0f, 0f, 90f);
-            clock.transform.position = new Vector3(wallFaceX + clockDepth, 2.05f, -0.8f);
-            clock.transform.localScale = new Vector3(clockDepth * 2f, clockRadius * 2f, clockRadius * 2f);
-            clock.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.28f, 0.24f, 0.18f));
 
-            // The clock is the interaction finder's entry point for this whole
-            // progression beat, and that finder only ever sees colliders. A
-            // collider-free clock made the ClockStops12 objective unreachable.
+            // Unity's cylinder runs along Y with its circular caps on the Y axis, so it is
+            // rotated a quarter turn about Z to face along X, into the room.
+            clock.transform.rotation = Quaternion.Euler(0f, 0f, 90f);
+            clock.transform.position = new Vector3(wallFaceX + clockDepth * 1.5f, clockY, clockZ);
+            clock.transform.localScale = new Vector3(clockDepth * 2f, clockRadius * 2f, clockRadius * 2f);
+            clock.GetComponent<MeshRenderer>().sharedMaterial =
+                TriangleShapes.GetSmoothMaterial(caseColor, 0.38f);
+
+            // The dial, a disc just proud of the case. A clock whose face is the same
+            // material as its case has no readable front, which is most of why the previous
+            // version was invisible: a dark cylinder on a dark wall in a dark room.
+            GameObject dial = TriangleShapes.CreateShape("ClockFace", TriangleShapes.Cylinder, transform);
+            dial.transform.SetParent(transform, true);
+            dial.transform.rotation = Quaternion.Euler(0f, 0f, 90f);
+            dial.transform.position = new Vector3(wallFaceX + clockDepth * 2.2f, clockY, clockZ);
+            dial.transform.localScale = new Vector3(0.004f, clockRadius * 1.78f, clockRadius * 1.78f);
+            dial.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetSmoothMaterial(faceColor, 0.22f);
+            Track(dial);
+
+            // Hour marks around the dial. Twelve thin bars, radially arranged - which is
+            // what makes the stopped hands legible as pointing at twelve rather than at
+            // an arbitrary upward direction.
+            for (int i = 0; i < 12; i++)
+            {
+                // 0 is twelve o'clock, and the dial's own local Y is its up.
+                float angle = i * 30f;
+                float radius = clockRadius * 1.52f;
+                float radians = angle * Mathf.Deg2Rad;
+
+                var offset = new Vector3(0f, Mathf.Cos(radians) * radius, Mathf.Sin(radians) * radius);
+                AddTrim(new Vector3(wallFaceX + clockDepth * 2.6f, clockY + offset.y, clockZ + offset.z),
+                    new Vector3(0.003f, 0.016f, 0.005f),
+                    handColor, null, 1f, Quaternion.Euler(-angle, 0f, 0f), 0.30f);
+            }
+
+            // The clock is the interaction finder's entry point for this whole progression
+            // beat, and that finder only ever sees colliders. A collider-free clock made the
+            // ClockStops12 objective unreachable.
             clock.AddComponent<BoxCollider>().size = Vector3.one;
             Track(clock);
 
-            // Both hands point to twelve; their different lengths remain readable at a
-            // distance without requiring a texture or imported clock mesh. They sit a
-            // hair further into the room than the rim so they are never z-fought.
-            float handX = wallFaceX + clockDepth * 2f + 0.005f;
-            GameObject longHand = AddBox(new Vector3(handX, 2.05f + 0.065f, -0.8f), new Vector3(0.006f, 0.13f, 0.008f));
-            longHand.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.72f, 0.68f, 0.58f));
-            longHand.GetComponent<BoxCollider>().enabled = false;
+            // Both hands point to twelve. Their different lengths keep them readable at a
+            // distance without a texture or an imported clock mesh, and they sit a hair
+            // further into the room than the dial so they are never z-fought.
+            //
+            // Rotated so they genuinely point up the dial rather than being vertical boxes
+            // in world space - the previous version drew them as unrotated Y-aligned slabs,
+            // which happened to be right by accident only because twelve is straight up.
+            float handX = wallFaceX + clockDepth * 2.8f;
 
-            GameObject shortHand = AddBox(new Vector3(handX, 2.05f + 0.045f, -0.8f), new Vector3(0.006f, 0.09f, 0.011f));
-            shortHand.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetMaterial(new Color(0.72f, 0.68f, 0.58f));
-            shortHand.GetComponent<BoxCollider>().enabled = false;
+            AddTrim(new Vector3(handX, clockY + 0.062f, clockZ + 0.032f),
+                new Vector3(0.003f, 0.124f, 0.007f), handColor, null, 1f,
+                Quaternion.Euler(-16f, 0f, 0f), 0.34f);
+
+            AddTrim(new Vector3(handX, clockY + 0.042f, clockZ + 0.020f),
+                new Vector3(0.004f, 0.084f, 0.010f), handColor, null, 1f,
+                Quaternion.Euler(-4f, 0f, 0f), 0.34f);
+
+            // A small cap over the hand pivots, so the centre is not an empty hole.
+            GameObject pin = TriangleShapes.CreateShape("ClockPin", TriangleShapes.Cylinder, transform);
+            pin.transform.SetParent(transform, true);
+            pin.transform.rotation = Quaternion.Euler(0f, 0f, 90f);
+            pin.transform.position = new Vector3(handX + 0.002f, clockY, clockZ);
+            pin.transform.localScale = new Vector3(0.004f, 0.018f, 0.018f);
+            pin.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetSmoothMaterial(handColor, 0.42f);
+            Track(pin);
 
             // The clock is the anchor for the ClockStops12 motif, so examining it should
             // put that phrase in the player's Recognition catalogue. Otherwise the motif
@@ -325,60 +770,160 @@ namespace Triangle.World
 
         private void BuildLighting()
         {
-            // Ambient and fog are process-wide, so this environment declares them
-            // through an atmosphere component that owns them for as long as the room
-            // exists and hands them back on teardown. The values are unchanged from
-            // when they were written straight to RenderSettings.
+            // Ambient and fog are process-wide, so this environment declares them through an
+            // atmosphere component that owns them for as long as the room exists and hands
+            // them back on teardown.
             //
-            // Ambient is kept very low and cold. A bright ambient term is what made the
-            // whole shell read as flat pasteboard: it lights every surface equally, so
-            // nothing has shape. Almost all of the room's form should come from the
-            // window, with the corners falling away into the fog.
+            // Ambient is very low and cold. A bright ambient term lights every surface
+            // equally, so nothing has shape - which is what made the shell read as flat
+            // pasteboard. Almost all of the room's form comes from the window, and the
+            // corners fall away into the fog.
+            //
+            // Lower than the previous 0.40. With ACES tonemapping and a post exposure of
+            // -0.35 stops in the stack, an ambient at 0.40 lifts the whole room into a
+            // narrow grey band where nothing has contrast - which is precisely the flat look
+            // this rebuild is trying to remove.
             GameObject atmosphereObject = Track(new GameObject("RoomAtmosphere"));
             atmosphereObject.transform.SetParent(transform, false);
 
             var atmosphere = atmosphereObject.AddComponent<TriangleEnvironmentAtmosphere>();
             atmosphere.Ambient = UnityEngine.Rendering.AmbientMode.Trilight;
-            atmosphere.SkyColor = new Color(0.20f, 0.24f, 0.34f);
-            atmosphere.EquatorColor = new Color(0.09f, 0.10f, 0.13f);
-            atmosphere.GroundColor = new Color(0.03f, 0.03f, 0.04f);
-            atmosphere.Intensity = 0.40f;
+            atmosphere.SkyColor = new Color(0.115f, 0.145f, 0.215f);
+            atmosphere.EquatorColor = new Color(0.045f, 0.052f, 0.070f);
+            atmosphere.GroundColor = new Color(0.014f, 0.015f, 0.019f);
+            atmosphere.Intensity = 0.22f;
             atmosphere.FogEnabled = true;
             atmosphere.Fog = FogMode.ExponentialSquared;
-            atmosphere.FogDensity = 0.016f;
-            atmosphere.FogColor = new Color(0.045f, 0.055f, 0.080f);
+            atmosphere.FogDensity = 0.020f;
+            atmosphere.FogColor = new Color(0.028f, 0.036f, 0.056f);
             atmosphere.Apply();
 
-            // The window is the key light: cold, and the only strong source. Its range
-            // has to reach the far wall or the room reads as a black void with a bright
-            // rectangle floating in it. It is also the only shadow caster, which is what
-            // gives the furniture and the player any sense of volume.
-            AddLight("WindowLight", new Vector3(0f, 1.55f, -roomHalfZ + 0.45f),
-                new Color(0.52f, 0.66f, 0.95f), 3.4f, 14f, LightShadows.Soft);
+            // The window is the key light: cold, and the only strong source.
+            //
+            // A spot rather than a point, aimed into the room. A point light at the window
+            // throws light in every direction including backwards into the wall, and reads as
+            // a bare bulb hanging in a recess - which is the clearest tell that a window is
+            // not lighting the room. A spot with a rectangular cookie throws a
+            // soft-edged rectangle of light into the room, and casts the shadows that give
+            // the furniture volume.
+            //
+            // Placed inside the reveal so its cone passes through the opening rather than
+            // through the wall beside it, and aimed slightly down because the window is above
+            // the player's eye line and the light should land on the floor.
+            var keyObject = Track(new GameObject("WindowKey"));
+            keyObject.transform.SetParent(transform, false);
+            keyObject.transform.position = new Vector3(0f, 1.58f, -roomHalfZ + 0.32f);
 
-            // Ceiling fill - dim and warm, and deliberately shadowless so it lifts the
-            // corners without flattening the window's shadows.
-            AddLight("CeilingFill", new Vector3(0f, 2.55f, 0.8f), new Color(0.62f, 0.52f, 0.40f), 0.60f, 8f);
+            // Aimed along +Z into the room, tipped down 12 degrees so the pool of light
+            // falls on the floor in front of the window rather than on the far wall.
+            keyObject.transform.rotation = Quaternion.Euler(12f, 0f, 0f);
+
+            Light key = TriangleLighting.Create(keyObject, LightType.Spot,
+                new Color(0.56f, 0.70f, 0.98f), 5.2f, 11f, Vector3.zero,
+                TriangleLighting.LayerKey, LightShadows.Soft);
+
+            // Wide enough to fill the room. A narrow cone would light a bright ellipse and
+            // leave the rest black, which is the same failure as no light at all.
+            key.spotAngle = 118f;
+            key.innerSpotAngle = 62f;
+
+            // The rectangle cookie is what makes this read as a window rather than a bulb.
+            // Held on the builder so OnDestroy can reclaim it.
+            _windowCookie = TriangleLighting.RectangularCookie(256, 0.55f, 0.16f);
+            TriangleLighting.ApplyCookie(key, _windowCookie, new Vector2(1.5f, 1.7f));
+
+            key.shadowStrength = 0.9f;
+
+            // A second, wider and much dimmer spot for the wash near the window, with no
+            // shadows. Two lights rather than one wider cone because a single wide spot has
+            // to be bright enough at the window to light the near wall, and then the far
+            // corners get the same brightness as the window itself.
+            var washObject = Track(new GameObject("WindowWash"));
+            washObject.transform.SetParent(transform, false);
+            washObject.transform.position = new Vector3(0f, 1.62f, -roomHalfZ + 0.55f);
+            washObject.transform.rotation = Quaternion.Euler(22f, 0f, 0f);
+
+            Light wash = TriangleLighting.Create(washObject, LightType.Spot,
+                new Color(0.44f, 0.56f, 0.86f), 1.5f, 9f, Vector3.zero,
+                TriangleLighting.LayerKey);
+            wash.spotAngle = 150f;
+            wash.innerSpotAngle = 20f;
+            TriangleLighting.ApplyCookie(wash, TriangleLighting.RectangularCookie(128, 0.75f, 0.1f),
+                new Vector2(2.4f, 2.6f));
+
+            // A very dim cool bounce off the floor, so the ceiling is not pitch black. This
+            // is standing in for the one bounce of light a real room would have, and there
+            // is no runtime lightmap baking in a player to provide it - Unity's Lightmapping
+            // API is editor-only. Without something like this the ceiling reads as a hole.
+            var bounceObject = Track(new GameObject("FloorBounce"));
+            bounceObject.transform.SetParent(transform, false);
+            bounceObject.transform.position = new Vector3(0f, 0.35f, 1.1f);
+
+            Light bounce = TriangleLighting.Create(bounceObject, LightType.Point,
+                new Color(0.30f, 0.38f, 0.55f), 0.30f, 4.2f, Vector3.zero,
+                TriangleLighting.LayerFill);
+            bounce.cookie = TriangleLighting.RadialCookie(64, 0.9f, 1f);
+
+            // A dim warm fill at the ceiling, shadowless, on the fill layer so it cannot
+            // compete with the key. Kept very low: it exists to keep the ceiling from
+            // reading as a void, not to light anything.
+            var ceilingObject = Track(new GameObject("CeilingFill"));
+            ceilingObject.transform.SetParent(transform, false);
+            ceilingObject.transform.position = new Vector3(0f, 2.62f, 0.9f);
+
+            Light ceilingFill = TriangleLighting.Create(ceilingObject, LightType.Point,
+                new Color(0.42f, 0.40f, 0.44f), 0.22f, 5.5f, Vector3.zero,
+                TriangleLighting.LayerFill);
+            ceilingFill.cookie = TriangleLighting.RadialCookie(64, 0.95f, 1f);
         }
 
-        private void AddLight(string lightName, Vector3 position, Color color, float intensity, float range,
-            LightShadows shadows = LightShadows.None)
+        /// <summary>
+        /// Places the room's reflection probe and light probes.
+        ///
+        /// URP evaluates at most two reflection probes per pixel and blends them, so one per
+        /// room is affordable. Box projection is what makes the cubemap respect the room's
+        /// walls: without it the probe behaves as an infinite sphere from its own centre and
+        /// every reflective surface shows a reflection that is only correct in one spot.
+        ///
+        /// The light probes matter more than they look. URP has no local probe volumes and
+        /// runtime lightmap baking does not exist in a player, so without an explicit group
+        /// every surface in the room receives the same flat ambient - which is a large part of
+        /// why the corners of this room read as one flat value.
+        /// </summary>
+        private void BuildProbes()
         {
-            GameObject lightObject = Track(new GameObject(lightName));
-            lightObject.transform.SetParent(transform, true);
-            lightObject.transform.position = position;
-            Light light = lightObject.AddComponent<Light>();
-            light.type = LightType.Point;
-            light.color = color;
-            light.intensity = intensity;
-            light.range = range;
-            light.shadows = shadows;
-            if (shadows != LightShadows.None)
-            {
-                light.shadowStrength = 0.85f;
-                light.shadowBias = 0.02f;
-                light.shadowNearPlane = 0.05f;
-            }
+            // Sized to the room's interior, inset from the walls so the box projection does
+            // not clip against them.
+            var probe = TriangleLighting.CreateProbe(Track(new GameObject("RoomReflectionProbe")),
+                new Vector3(0f, roomHeight * 0.5f, 0f),
+                new Vector3(roomHalfX * 2f - WallThickness * 2f, roomHeight - 0.2f, roomHalfZ * 2f - WallThickness * 2f));
+
+            // Refreshed once the room has finished assembling, so the first frame the player
+            // sees already contains the room rather than the default skybox.
+            TriangleLighting.RefreshWhenSettled(probe, this);
+
+            // Eight probes: the four upper corners, the four lower, and the centre of each
+            // face region. A tetrahedral arrangement would be fewer, but a corner and a
+            // centre are both where this room's values differ most, and eight costs nothing.
+            var group = TriangleLighting.CreateProbeGroup(Track(new GameObject("RoomLightProbes")),
+                new[]
+                {
+                    new Vector3(0f, roomHeight - 0.25f, 0f),
+                    new Vector3(-roomHalfX + 0.3f, roomHeight - 0.25f, -roomHalfZ + 0.3f),
+                    new Vector3(roomHalfX - 0.3f, roomHeight - 0.25f, -roomHalfZ + 0.3f),
+                    new Vector3(-roomHalfX + 0.3f, roomHeight - 0.25f, roomHalfZ - 0.3f),
+                    new Vector3(roomHalfX - 0.3f, roomHeight - 0.25f, roomHalfZ - 0.3f),
+                    new Vector3(0f, 0.5f, 0f),
+                    new Vector3(-roomHalfX + 0.3f, 0.5f, -roomHalfZ + 0.3f),
+                    new Vector3(roomHalfX - 0.3f, 0.5f, -roomHalfZ + 0.3f),
+                    new Vector3(-roomHalfX + 0.3f, 0.5f, roomHalfZ - 0.3f),
+                    new Vector3(roomHalfX - 0.3f, 0.5f, roomHalfZ - 0.3f)
+                });
+
+            // The probes themselves cannot be filled at runtime, which TriangleLighting
+            // explains. Placed anyway: they bound the region and cost nothing, and a future
+            // baked-lighting pass would populate them.
+            TriangleLighting.BakeAmbientInto(group);
         }
     }
 }
