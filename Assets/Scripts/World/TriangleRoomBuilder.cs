@@ -397,22 +397,23 @@ namespace Triangle.World
             // searches colliders only and this pane carries the MoonWrongSide inspectable.
             // A collider-free pane makes it unreachable no matter where the player stands,
             // which is a progression bug rather than a graphics one.
+            // The pane, emissive at a level chosen against the tonemapping curve rather than by
+            // eye.
+            //
+            // This is the single hardest number in the room to get right, and both earlier
+            // values were wrong in opposite directions. At 3.2 it clipped to featureless
+            // white and took the frame and glazing bars with it; at 1.35 it was still
+            // reading as a flat white panel, because emission of that magnitude lands on the
+            // flat part of the ACES curve where the blue channel saturates first.
+            //
+            // 0.62 sits on the curve's shoulder, so the pane keeps a visible blue cast and
+            // the glazing bars read as dark against it. The window is still by far the
+            // brightest surface in the room - which is the point, since it is the only light
+            // source - but it reads as a view onto a moonlit night rather than a light box.
             GameObject window = AddBox(new Vector3(0f, windowCentreY, wallFace + 0.035f),
                 new Vector3(paneWidth, paneHeight, 0.02f), null, Color.white);
             window.GetComponent<MeshRenderer>().sharedMaterial = TriangleShapes.GetEmissiveMaterial(
-                new Color(0.52f, 0.64f, 0.88f), 1.35f);
-
-            // Held well below the level that clips to white.
-            //
-            // The pane is the brightest thing in a room where everything else sits near 0.1,
-            // and the tonemapping curve puts anything much above 2.0 at the top of its range -
-            // at which point the window is a featureless white rectangle that reads as a light
-            // box rather than as a view onto a moonlit night. An earlier build ran this at 3.2
-            // and the pane blew out completely, taking the frame, the glazing bars and the
-            // reveal detail with it.
-            //
-            // 1.35 keeps it clearly the brightest surface while leaving headroom for bloom to
-            // spread a glow around it rather than swallow it.
+                new Color(0.44f, 0.56f, 0.84f), 0.62f);
 
             // Glazing bars. A window is not one pane, and the bars are what give the
             // emissive rectangle internal structure - without them a bright rectangle is a
